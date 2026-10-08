@@ -246,15 +246,19 @@ const char *typeName(uint8_t t) {
   }
 }
 
-// One character in TI's 8-bit character set (used for names and strings),
-// converted to UTF-8 for printing. Only what has been seen so far; anything
-// else is shown as \xNN.
-//   confirmed by captures: 80 α, 81 β, 83 γ, 85 δ, 86 ε, 87 ζ
-//   inferred (the gaps between them): 82 Γ, 84 Δ
+// One character in TI's single-byte character set (used for names and
+// strings), converted to UTF-8 for printing. Anything not mapped yet is
+// shown as \xNN.
+//   0x80-0x9F: from Wikipedia's "TI calculator character sets" table for the
+//   TI-89/92/Voyage 200. Captures confirmed 80 α, 81 β, 83 γ, 85 δ, 86 ε, 87 ζ.
+//   0xA0-0xFF: close to Latin-1 but not identical; not mapped yet.
 String tiChar(uint8_t c) {
-  static const char *greek[] = {"α", "β", "Γ", "γ", "Δ", "δ", "ε", "ζ"};
+  static const char *hi[] = {
+    "α", "β", "Γ", "γ", "Δ", "δ", "ε", "ζ", "θ", "λ", "ξ", "∏", "π", "ρ", "∑", "σ",  // 80
+    "τ", "φ", "ψ", "Ω", "ω", "ᴇ", "ℯ", "𝐢", "ʳ", "ᵀ", "x̅", "y̅", "≤", "≠", "≥", "∠",  // 90
+  };
   if (c >= 0x20 && c < 0x7F) return String((char)c);
-  if (c >= 0x80 && c <= 0x87) return greek[c - 0x80];
+  if (c >= 0x80 && c <= 0x9F) return hi[c - 0x80];
   char buf[8];
   snprintf(buf, sizeof(buf), "\\x%02X", c);
   return buf;

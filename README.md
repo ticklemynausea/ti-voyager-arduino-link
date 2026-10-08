@@ -107,29 +107,31 @@ Observed on a Voyage 200 with the sketches in this repo:
 
 ### Character set
 
-The calculator does not use Unicode. Names and text use TI's own 8-bit character
-set: one byte per character, with `0x20`-`0x7E` matching ASCII and TI's own
-symbols (Greek letters, math symbols, accented letters) from `0x80` up.
+The calculator does not use Unicode. Names and text use TI's own **single-byte**
+character set: one byte per character, 256 codes in total, with code 0 as the
+string terminator. `0x20`-`0x7E` match ASCII, and TI's own symbols (Greek letters,
+math symbols, accented letters) fill the codes from `0x80` up. Strings and variable
+names use the same codes.
 
-Strings and variable names use the same codes. Known so far:
+Symbols that look like characters on the calculator are often **tokens** instead:
+`sin(`, `√(`, `∫(` and so on are stored as expression tokens and never appear in
+the character set. The two tables are separate: ∑ is `8E` as a character but `BA`
+as an expression token.
 
-| Code | Char | Status |
-|---|---|---|
-| `80` | α | confirmed |
-| `81` | β | confirmed |
-| `82` | Γ | inferred (the gap between β and γ) |
-| `83` | γ | confirmed |
-| `84` | Δ | inferred (the gap between γ and δ) |
-| `85` | δ | confirmed |
-| `86` | ε | confirmed |
-| `87` | ζ | confirmed (as a variable name) |
+The `0x80`-`0x9F` block, from the published table (see Credits):
 
-Confirmed codes come from a string `"αβγδε"` (`80 81 83 85 86`) and a function
-named ζ, both sent with `SendCalc`.
+| | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | A | B | C | D | E | F |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| **8x** | α | β | Γ | γ | Δ | δ | ε | ζ | θ | λ | ξ | ∏ | π | ρ | ∑ | σ |
+| **9x** | τ | φ | ψ | Ω | ω | ᴇ | ℯ | 𝐢 | ʳ | ᵀ | x̅ | y̅ | ≤ | ≠ | ≥ | ∠ |
 
-**This is still a known gap.** Everything above `0x87` is unmapped, and the
-sketches print unmapped codes as `\xNN`. The Greek letters probably continue in
-the same pattern (η, θ, …), but that is unverified. To extend the table, store a
+Captures confirm `80` α, `81` β, `83` γ, `85` δ, `86` ε (a string `"αβγδε"` arrived
+as `80 81 83 85 86`) and `87` ζ (a function named ζ). The 21 Greek characters at
+`80`-`94` match the 21 entries (1-9, A-L) of the calculator's Greek CHAR menu.
+TI includes only some of the Greek alphabet: there is no η, ι or κ, for example.
+
+**Remaining gap:** `0xA0`-`0xFF` is close to Latin-1 but not identical, and is not
+mapped yet; the sketches print those codes as `\xNN`. To check them, store a
 string containing the characters of interest, send it with `SendCalc`, and read
 the codes from the hex dump.
 
@@ -147,3 +149,5 @@ the codes from the hex dump.
   Arduino TI linking library, for the pin conventions and approach.
 - The [TIGCC documentation](http://tigcc.ticalc.org/doc/link.html) for the
   calculator's link functions and variable types.
+- [TI calculator character sets](https://en.wikipedia.org/wiki/TI_calculator_character_sets)
+  on Wikipedia for the TI-89/92/Voyage 200 character table.
