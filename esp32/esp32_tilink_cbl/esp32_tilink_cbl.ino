@@ -169,8 +169,8 @@ bool sendPacket(uint8_t cmd, const uint8_t *data = nullptr, uint16_t len = 0) {
 }
 
 // Wait for a specific packet from the calculator; prints whatever arrives.
-bool expect(uint8_t cmd) {
-  int r = recvPacket(pkt, REPLY_TIMEOUT_US);
+bool expect(uint8_t cmd, uint32_t timeoutUs = REPLY_TIMEOUT_US) {
+  int r = recvPacket(pkt, timeoutUs);
   if (r == 0) {
     Serial.printf("! timed out waiting for %s\n", cmdName(cmd));
     return false;
@@ -411,20 +411,186 @@ void handleVar() {
   Serial.println("== transfer complete ==\n");
 }
 
+// ---------- pushing variables to the calculator ----------
+//
+// The same exchange the calculator uses when it sends, with roles swapped:
+//   ESP  -> VAR (header)      calc -> ACK, CTS
+//   ESP  -> ACK, DATA         calc -> ACK
+//   ESP  -> EOT               calc -> ACK
+// Header data: size (4 bytes LE) | type | name length | name | 00
+// DATA:        4 prefix bytes | content      (header size = content length)
+//
+// At the Home screen the calculator accepts a VAR it didn't ask for, but it
+// can take several seconds to answer: its link hardware buffers our bytes
+// and the OS only handles them when it is idle. Hence the long first wait.
+// "start rts" makes push start with RTS (0xC9) instead of VAR, for experiments.
+
+const uint32_t PUSH_FIRST_REPLY_US = 10000000;   // 10 s for the first ACK of a push
+
+uint8_t pushStartCmd = CMD_VAR;
+
+bool pushVar(uint8_t id, uint8_t type, const String &name, const uint8_t prefix[4],
+             const uint8_t *content, uint16_t contentLen, uint8_t startCmd,
+             uint32_t firstReplyUs) {
+  static uint8_t data[MAX_DATA];
+  if (contentLen + 4 > MAX_DATA || name.length() == 0 || name.length() > 8) {
+    Serial.println("! name must be 1-8 characters and the value must fit in one packet");
+    return false;
+  }
+
+  uint8_t hdr[16];
+  uint8_t n = 0;
+  hdr[n++] = contentLen & 0xFF;
+  hdr[n++] = contentLen >> 8;
+  hdr[n++] = 0;
+  hdr[n++] = 0;
+  hdr[n++] = type;
+  hdr[n++] = name.length();
+  for (uint16_t i = 0; i < name.length(); i++) hdr[n++] = (uint8_t)name[i];
+  hdr[n++] = 0x00;   // trailing header byte; 00 in captures of strings and CBL lists
+
+  memcpy(data, prefix, 4);
+  memcpy(data + 4, content, contentLen);
+
+  if (!ti.lineIdle()) {
+    Serial.println("! link not idle - is the calculator busy?");
+    return false;
+  }
+  deviceId = id;
+  if (!sendPacket(startCmd, hdr, n)) return false;
+  if (!expect(CMD_ACK, firstReplyUs)) return false;
+  if (!expect(CMD_CTS)) return false;
+  if (!sendPacket(CMD_ACK)) return false;
+  if (!sendPacket(CMD_DATA, data, contentLen + 4)) return false;
+  if (!expect(CMD_ACK)) return false;
+  if (!sendPacket(CMD_EOT)) return false;
+  if (!expect(CMD_ACK)) return false;
+  Serial.println("== sent to calculator ==\n");
+  return true;
+}
+
+// String, sent the way another Voyage 200 would with SendCalc (id 0x88):
+// content = size (2 bytes BE) | 00 | text | 00 | 2D
+// The text goes out byte for byte, so stick to ASCII for now.
+bool pushString(const String &name, const String &text) {
+  static uint8_t content[MAX_DATA];
+  uint16_t len = text.length();
+  if (len + 5 > MAX_DATA - 4) return false;
+  uint16_t inner = len + 3;               // 00 + text + 00 + 2D
+  uint16_t n = 0;
+  content[n++] = inner >> 8;
+  content[n++] = inner & 0xFF;
+  content[n++] = 0x00;
+  for (uint16_t i = 0; i < len; i++) content[n++] = (uint8_t)text[i];
+  content[n++] = 0x00;
+  content[n++] = 0x2D;
+  const uint8_t prefix[4] = {0, 0, 0, 0};
+  return pushVar(0x88, 0x0C, name, prefix, content, n, pushStartCmd, PUSH_FIRST_REPLY_US);
+}
+
+// A number as the calculator writes it in CBL lists: "2E+6", "-1.5", "0.33333".
+String tiNumber(double v) {
+  char buf[32];
+  snprintf(buf, sizeof(buf), "%.10G", v);   // e.g. "2E+06"
+  String s = buf;
+  int e = s.indexOf('E');
+  if (e >= 0) {                              // drop leading zeros in the exponent
+    int d = e + 2;
+    while (d < (int)s.length() - 1 && s[d] == '0') s.remove(d, 1);
+  }
+  return s;
+}
+
+// List in the CBL format from the Send captures (id 0x19, name FF):
+// prefix = element count (4 bytes LE), content = " v1 v2 v3" + 00.
+// Sent as the answer to a Get request (see handleReq).
+bool sendCblList(const double *v, uint16_t count) {
+  static uint8_t content[MAX_DATA];
+  uint16_t n = 0;
+  for (uint16_t i = 0; i < count; i++) {
+    String s = " " + tiNumber(v[i]);
+    if (n + s.length() + 1 > MAX_DATA - 4) return false;
+    for (uint16_t k = 0; k < s.length(); k++) content[n++] = (uint8_t)s[k];
+  }
+  content[n++] = 0x00;
+  const uint8_t prefix[4] = {(uint8_t)count, (uint8_t)(count >> 8), 0, 0};
+  return pushVar(0x19, 0x04, String((char)0xFF), prefix, content, n, CMD_VAR,
+                 REPLY_TIMEOUT_US);
+}
+
+// ---------- answering Get ----------
+//
+// "Get x" on the calculator sends a REQ (0xA2) with id 0x89, data
+// 00 00 00 00 1E 00 (captured), and waits. The answer is set beforehand
+// with "reply <numbers>" and is sent for every Get until changed.
+// Guessed exchange: ESP -> ACK, then the list as a normal transfer
+// (VAR -> ACK, CTS -> ACK, DATA -> ACK -> EOT -> ACK).
+
+double   replyVals[MAX_LIST];
+uint16_t replyCount = 0;
+
+void handleReq() {
+  if (!pkt.checksumOk) return;
+  if (replyCount == 0) {
+    Serial.println("   Get request, but no answer set (use: reply <n1> <n2> ...)");
+    return;
+  }
+  deviceId = 0x19;
+  if (!sendPacket(CMD_ACK)) return;
+  sendCblList(replyVals, replyCount);
+}
+
 // ---------- Serial Monitor commands ----------
 
 String line;
 
+const char *HELP =
+  "commands:\n"
+  "  push <name> <text>      send a string variable (calculator idle at Home screen)\n"
+  "  reply <n1> <n2> ...     answer for Get x on the calculator; 'reply' alone clears\n"
+  "  start var | start rts   first packet used by push (default var)\n"
+  "  id auto | id <hex>      reply machine id for transfers the calc starts";
+
 void handleCommand(String cmd) {
   cmd.trim();
-  if (cmd == "id auto") {
+  if (cmd.startsWith("push ")) {
+    String rest = cmd.substring(5);
+    rest.trim();
+    int sp = rest.indexOf(' ');
+    if (sp <= 0) {
+      Serial.println("usage: push <name> <text>");
+      return;
+    }
+    pushString(rest.substring(0, sp), rest.substring(sp + 1));
+  } else if (cmd == "reply" || cmd.startsWith("reply ")) {
+    replyCount = 0;
+    const char *s = cmd.c_str() + 5;
+    while (replyCount < MAX_LIST) {
+      char *end;
+      double v = strtod(s, &end);
+      if (end == s) break;
+      replyVals[replyCount++] = v;
+      s = end;
+    }
+    if (replyCount == 0) {
+      Serial.println("Get answer cleared");
+    } else {
+      Serial.print("Get answer set to {");
+      for (uint16_t i = 0; i < replyCount; i++)
+        Serial.printf("%s%s", i ? "," : "", tiNumber(replyVals[i]).c_str());
+      Serial.println("} - now run Get x on the calculator");
+    }
+  } else if (cmd == "start rts" || cmd == "start var") {
+    pushStartCmd = (cmd == "start rts") ? CMD_RTS : CMD_VAR;
+    Serial.printf("push now starts with %s\n", cmdName(pushStartCmd));
+  } else if (cmd == "id auto") {
     idOverride = 0;
     Serial.println("reply machine id: automatic (0x19 for Send, sender's id for SendCalc)");
   } else if (cmd.startsWith("id ")) {
     idOverride = (uint8_t)strtoul(cmd.c_str() + 3, nullptr, 16);
     Serial.printf("reply machine id forced to 0x%02X\n", idOverride);
   } else if (cmd.length()) {
-    Serial.println("commands:  id auto   |   id <hex>   (e.g. id 88)");
+    Serial.println(HELP);
   }
 }
 
@@ -435,7 +601,9 @@ void setup() {
   Serial.println("\nTI link CBL emulator ready.");
   Serial.printf("Line idle: %s\n", ti.lineIdle() ? "yes" : "NO - check wiring / calculator on?");
   Serial.println("Reply machine id: automatic (override with: id <hex>, back with: id auto)");
-  Serial.println("Try  Send {1,2,3}  or  \"hello\"->s : SendCalc s  on the calculator.\n");
+  Serial.println("Try  Send {1,2,3}  or  \"hello\"->s : SendCalc s  on the calculator.");
+  Serial.println(HELP);
+  Serial.println();
 }
 
 void loop() {
@@ -443,6 +611,7 @@ void loop() {
   if (r == 1) {
     printPacket("<-", pkt);
     if (pkt.cmd == CMD_VAR) handleVar();
+    else if (pkt.cmd == CMD_REQ) handleReq();
     else if (pkt.cmd == CMD_RDY || pkt.cmd == CMD_EOT) sendPacket(CMD_ACK);
   } else if (r < 0) {
     Serial.printf("! link error at bit %u: %s (tip=%u ring=%u)\n", ti.lastErrBit,
