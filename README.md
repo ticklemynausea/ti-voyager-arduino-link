@@ -111,13 +111,27 @@ The calculator does not use Unicode. Names and text use TI's own 8-bit character
 set: one byte per character, with `0x20`-`0x7E` matching ASCII and TI's own
 symbols (Greek letters, math symbols, accented letters) from `0x80` up.
 
-**This is a known gap.** Only one non-ASCII code is confirmed: `0x87` = ζ, from a
-function named ζ. The sketches therefore print any other code above `0x7E` as
-`\xNN`. Greek letters probably run in order from `0x80` (α, β, Γ, γ, Δ, δ, ε, ζ…),
-which fits ζ at `0x87`, but that is unverified. To fill in the table, store a
+Strings and variable names use the same codes. Known so far:
+
+| Code | Char | Status |
+|---|---|---|
+| `80` | α | confirmed |
+| `81` | β | confirmed |
+| `82` | Γ | inferred (the gap between β and γ) |
+| `83` | γ | confirmed |
+| `84` | Δ | inferred (the gap between γ and δ) |
+| `85` | δ | confirmed |
+| `86` | ε | confirmed |
+| `87` | ζ | confirmed (as a variable name) |
+
+Confirmed codes come from a string `"αβγδε"` (`80 81 83 85 86`) and a function
+named ζ, both sent with `SendCalc`.
+
+**This is still a known gap.** Everything above `0x87` is unmapped, and the
+sketches print unmapped codes as `\xNN`. The Greek letters probably continue in
+the same pattern (η, θ, …), but that is unverified. To extend the table, store a
 string containing the characters of interest, send it with `SendCalc`, and read
-the codes from the hex dump. Whether strings use the same codes as variable
-names is also still to be confirmed.
+the codes from the hex dump.
 
 ### Open questions
 

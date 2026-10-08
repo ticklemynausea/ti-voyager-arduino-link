@@ -246,11 +246,15 @@ const char *typeName(uint8_t t) {
   }
 }
 
-// One character of a variable name, in TI's character set. Only what has
-// been seen so far; anything else is shown as \xNN.
+// One character in TI's 8-bit character set (used for names and strings),
+// converted to UTF-8 for printing. Only what has been seen so far; anything
+// else is shown as \xNN.
+//   confirmed by captures: 80 α, 81 β, 83 γ, 85 δ, 86 ε, 87 ζ
+//   inferred (the gaps between them): 82 Γ, 84 Δ
 String tiChar(uint8_t c) {
+  static const char *greek[] = {"α", "β", "Γ", "γ", "Δ", "δ", "ε", "ζ"};
   if (c >= 0x20 && c < 0x7F) return String((char)c);
-  if (c == 0x87) return "ζ";
+  if (c >= 0x80 && c <= 0x87) return greek[c - 0x80];
   char buf[8];
   snprintf(buf, sizeof(buf), "\\x%02X", c);
   return buf;
@@ -275,12 +279,11 @@ void printVarHeader(const Packet &p) {
 
 // String sent with SendCalc (from a real capture of "six seven"):
 //   00 00 00 00 | size (2 bytes, BIG-endian) | 00 | text | 00 | 2D (string tag)
-bool decodeString(const Packet &p, char *out, uint16_t outSize) {
+// The text uses TI's character set, so each byte goes through tiChar().
+bool decodeString(const Packet &p, String &out) {
   if (p.stored < 9 || p.data[6] != 0x00 || p.data[p.stored - 1] != 0x2D) return false;
-  uint16_t n = 0;
-  for (uint16_t i = 7; i < p.stored - 1 && p.data[i] != 0 && n + 1 < outSize; i++)
-    out[n++] = (char)p.data[i];
-  out[n] = 0;
+  out = "";
+  for (uint16_t i = 7; i < p.stored - 1 && p.data[i] != 0; i++) out += tiChar(p.data[i]);
   return true;
 }
 
@@ -378,18 +381,17 @@ void handleVar() {
 
   // Decode while the data is still in pkt, but print after the ACK so the
   // calculator isn't kept waiting.
-  static char str[MAX_DATA + 1];
-  String params, rpn;
+  String str, params, rpn;
   bool listOk = false, strOk = false, funcOk = false;
   if (pkt.checksumOk) {
     if (varType == 0x04 && cblMode) listOk = parseList(pkt);  // Send {...}: text list
-    else if (varType == 0x0C) strOk = decodeString(pkt, str, sizeof(str));
+    else if (varType == 0x0C) strOk = decodeString(pkt, str);
     else if (varType == 0x13) funcOk = decodeFunction(pkt, params, rpn);
   }
   if (!sendPacket(CMD_ACK)) return;
 
   if (listOk) printList();
-  else if (strOk) Serial.printf("   string: \"%s\"\n", str);
+  else if (strOk) Serial.printf("   string: \"%s\"\n", str.c_str());
   else if (funcOk) Serial.printf("   function: %s(%s), body in reverse Polish: %s\n",
                                  varName.c_str(), params.c_str(), rpn.c_str());
   else Serial.printf("   (type 0x%02X: not decoded yet, raw bytes above)\n", varType);
