@@ -20,9 +20,9 @@
  */
 #include "TiLink.h"
 
-// Classic ESP32: 25 / 26.  M5Stack Stamp S3: 1 / 2.
+// Classic ESP32: 25 / 26.  M5Stack Stamp S3: 1 / 5.
 const uint8_t PIN_TIP  = 1;
-const uint8_t PIN_RING = 2;
+const uint8_t PIN_RING = 5;
 
 const uint32_t BURST_GAP_MS = 30;  // pause that ends a burst
 

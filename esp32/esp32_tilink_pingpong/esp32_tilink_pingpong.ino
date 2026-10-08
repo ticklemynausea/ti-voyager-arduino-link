@@ -16,9 +16,9 @@
  */
 #include "TiLink.h"
 
-const uint8_t  PIN_TIP    = 25;   // via level shifter to jack tip  (red)
-const uint8_t  PIN_RING   = 26;   // via level shifter to jack ring (white)
-const uint8_t  PIN_BUTTON = 0;    // BOOT button on most ESP32 dev boards
+const uint8_t  PIN_TIP    = 1;    // Stamp S3 G1 -> 220R -> jack tip  (red)   [classic ESP32: 25]
+const uint8_t  PIN_RING   = 5;    // Stamp S3 G5 -> 220R -> jack ring (white) [classic ESP32: 26]
+const uint8_t  PIN_BUTTON = 0;    // Stamp S3 button / BOOT button on ESP32 dev boards
 const uint32_t PONG_TIMEOUT_MS = 1000;
 
 TiLink ti(PIN_TIP, PIN_RING);
