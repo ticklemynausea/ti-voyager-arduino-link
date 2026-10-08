@@ -49,7 +49,22 @@ public:
   uint32_t byteTimeoutUs = 1000000;  // max gap between bytes inside a frame
   uint32_t framesSent = 0, framesRecv = 0, errors = 0;
 
+  // ---- diagnostics: details of the most recent layer-1 failure ----
+  // stage: 1 = recv, line went idle/timed out between bits
+  //        2 = recv, both lines low at the start of a bit
+  //        3 = recv, sender never released its line after our ack
+  //        4 = recv, our ack line didn't rise after we released it
+  //        5 = send, lines not idle before a bit
+  //        6 = send, receiver never acked
+  //        7 = send, receiver never released its ack
+  uint8_t lastErrStage = 0;
+  uint8_t lastErrBit = 0;      // bit index 0..7 (LSB first)
+  uint8_t lastErrValue = 0;    // bits collected/remaining at the time
+  uint8_t lastErrTip = 1, lastErrRing = 1;  // line states when it failed
+  const char *lastErrText();
+
 private:
+  void noteErr(uint8_t stage, uint8_t bit, uint8_t value);
   uint8_t _tip, _ring;
   bool _pullups;
 

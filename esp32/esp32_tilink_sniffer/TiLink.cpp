@@ -55,21 +55,47 @@ bool TiLink::fail() {
   return false;
 }
 
+// ---------- diagnostics ----------
+
+void TiLink::noteErr(uint8_t stage, uint8_t bit, uint8_t value) {
+  lastErrStage = stage;
+  lastErrBit = bit;
+  lastErrValue = value;
+  lastErrTip = isLow(_tip) ? 0 : 1;
+  lastErrRing = isLow(_ring) ? 0 : 1;
+}
+
+const char *TiLink::lastErrText() {
+  switch (lastErrStage) {
+    case 1: return "recv: timed out waiting for next bit";
+    case 2: return "recv: both lines low at start of bit";
+    case 3: return "recv: sender never released after our ack";
+    case 4: return "recv: our ack line didn't rise after release";
+    case 5: return "send: lines not idle before bit";
+    case 6: return "send: receiver never acked";
+    case 7: return "send: receiver never released ack";
+    default: return "none";
+  }
+}
+
 // ---------- layer 1 ----------
 
 bool TiLink::sendByte(uint8_t b) {
+  uint8_t orig = b;
   for (uint8_t i = 0; i < 8; i++) {
     // both lines must be idle before each bit
-    if (!waitFor(_tip, false, edgeTimeoutUs) || !waitFor(_ring, false, edgeTimeoutUs))
+    if (!waitFor(_tip, false, edgeTimeoutUs) || !waitFor(_ring, false, edgeTimeoutUs)) {
+      noteErr(5, i, orig);
       return fail();
+    }
 
     uint8_t sig = (b & 1) ? _ring : _tip;   // line we pull
     uint8_t ack = (b & 1) ? _tip  : _ring;  // line the receiver pulls
 
     pullLow(sig);
-    if (!waitFor(ack, true, edgeTimeoutUs)) return fail();
+    if (!waitFor(ack, true, edgeTimeoutUs)) { noteErr(6, i, orig); return fail(); }
     release(sig);
-    if (!waitFor(ack, false, edgeTimeoutUs)) return fail();
+    if (!waitFor(ack, false, edgeTimeoutUs)) { noteErr(7, i, orig); return fail(); }
 
     b >>= 1;
   }
@@ -84,6 +110,7 @@ int TiLink::recvByte(uint32_t firstBitTimeoutUs) {
     while (lineIdle()) {
       if (micros() - t0 >= timeout) {
         if (i == 0) return -1;  // nothing started: not an error
+        noteErr(1, i, value);
         fail();
         return -2;
       }
@@ -91,7 +118,7 @@ int TiLink::recvByte(uint32_t firstBitTimeoutUs) {
 
     bool tipLow = isLow(_tip);
     bool ringLow = isLow(_ring);
-    if (tipLow && ringLow) { fail(); return -2; }  // collision / garbage
+    if (tipLow && ringLow) { noteErr(2, i, value); fail(); return -2; }  // collision / garbage
 
     uint8_t sig = tipLow ? _tip : _ring;
     uint8_t ack = tipLow ? _ring : _tip;
@@ -99,9 +126,11 @@ int TiLink::recvByte(uint32_t firstBitTimeoutUs) {
 
     pullLow(ack);
     bool ok = waitFor(sig, false, edgeTimeoutUs);  // sender lets go
+    if (!ok) noteErr(3, i, value);
     release(ack);
     // make sure our own ack line has actually risen before looking for the next bit
-    if (!ok || !waitFor(ack, false, edgeTimeoutUs)) { fail(); return -2; }
+    if (ok && !waitFor(ack, false, edgeTimeoutUs)) { noteErr(4, i, value); ok = false; }
+    if (!ok) { fail(); return -2; }
   }
   return value;
 }

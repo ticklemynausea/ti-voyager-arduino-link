@@ -92,7 +92,9 @@ void loop() {
     if (burstLen < sizeof(burst)) burst[burstLen++] = (uint8_t)b;
     lastByteAt = millis();
   } else if (b == -2) {
-    Serial.println("\n! byte error (handshake broke mid-byte)");
+    Serial.printf("\n! byte error at bit %u: %s  (tip=%u ring=%u, bits so far 0x%02X)\n",
+                  ti.lastErrBit, ti.lastErrText(), ti.lastErrTip, ti.lastErrRing,
+                  ti.lastErrValue);
   }
 
   if (burstLen > 0 && millis() - lastByteAt > BURST_GAP_MS) flushBurst();
