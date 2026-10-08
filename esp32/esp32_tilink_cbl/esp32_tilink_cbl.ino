@@ -237,16 +237,40 @@ void printList() {
 
 // ---------- Send {...} from the calculator ----------
 
+const char *typeName(uint8_t t) {
+  switch (t) {
+    case 0x04: return "list";
+    case 0x0C: return "string";
+    case 0x13: return "function";
+    default:   return "?";
+  }
+}
+
+// One character of a variable name, in TI's character set. Only what has
+// been seen so far; anything else is shown as \xNN.
+String tiChar(uint8_t c) {
+  if (c >= 0x20 && c < 0x7F) return String((char)c);
+  if (c == 0x87) return "ζ";
+  char buf[8];
+  snprintf(buf, sizeof(buf), "\\x%02X", c);
+  return buf;
+}
+
+// VAR header data: size (4 bytes LE) | type | name length | name | flag
+String headerName(const Packet &p) {
+  String s;
+  if (p.stored < 6) return s;
+  for (uint8_t i = 0; i < p.data[5] && 6 + i < p.stored; i++) s += tiChar(p.data[6 + i]);
+  return s;
+}
+
 void printVarHeader(const Packet &p) {
   if (p.stored < 6) return;
   uint32_t size = p.data[0] | (p.data[1] << 8) | ((uint32_t)p.data[2] << 16) |
                   ((uint32_t)p.data[3] << 24);
-  uint8_t type = p.data[4], nameLen = p.data[5];
-  Serial.printf("   variable: size %lu, type 0x%02X%s, name (%u bytes):",
-                (unsigned long)size, type, type == 0x04 ? " (list)" : "", nameLen);
-  for (uint8_t i = 0; i < nameLen && 6 + i < p.stored; i++)
-    Serial.printf(" %02X", p.data[6 + i]);
-  Serial.println();
+  uint8_t type = p.data[4];
+  Serial.printf("   variable: \"%s\"  type 0x%02X (%s)  size %lu\n", headerName(p).c_str(),
+                type, typeName(type), (unsigned long)size);
 }
 
 // String sent with SendCalc (from a real capture of "six seven"):
@@ -260,8 +284,84 @@ bool decodeString(const Packet &p, char *out, uint16_t outSize) {
   return true;
 }
 
+// ---------- functions: a shallow, best-effort token dump ----------
+//
+// Function data (from captures of f(x)=x, x^2, -x, ∞ and ζ(x)=∑(1/n^x,n,1,∞)):
+//   00 00 00 00 | size (2 bytes BE) | E9 | body | E5 | params | 00 | ?? | 40 | DC
+// The body is in reverse-Polish order (operands before operators) and is
+// read backwards, from its end. Only tokens confirmed by captures are named;
+// anything else prints as ?NN and may throw the rest of the dump off.
+
+const char *tiVar(uint8_t t) {
+  static const char *ap[] = {"a","b","c","d","e","f","g","h","i","j","k","l","m","n","o","p"};
+  if (t == 0x08) return "x";
+  if (t >= 0x0B && t <= 0x1A) return ap[t - 0x0B];
+  return nullptr;
+}
+
+String tiToken(uint8_t t) {
+  if (const char *v = tiVar(t)) return v;
+  switch (t) {
+    case 0x28: return "∞";
+    case 0x7A: return "neg";
+    case 0x93: return "^";
+    case 0xBA: return "∑";
+    case 0xE5: return "[";      // marks where a function's argument list starts
+  }
+  char buf[6];
+  snprintf(buf, sizeof(buf), "?%02X", t);
+  return buf;
+}
+
+bool decodeFunction(const Packet &p, String &params, String &rpn) {
+  const int first = 7;                                   // first byte after E9
+  if (p.stored < 13 || p.data[6] != 0xE9 || p.data[p.stored - 1] != 0xDC) return false;
+
+  int bodyEnd = -1;                                      // the E5 closing the body
+  for (int i = p.stored - 5; i >= first; i--)
+    if (p.data[i] == 0xE5) { bodyEnd = i; break; }
+  if (bodyEnd < 0) return false;
+
+  params = "";
+  for (int i = bodyEnd + 1; i <= (int)p.stored - 5; i++) {
+    if (params.length()) params += ",";
+    params += tiToken(p.data[i]);
+  }
+
+  const int MAX_TOK = 64;
+  String tok[MAX_TOK];
+  int n = 0;
+  for (int i = bodyEnd - 1; i >= first && n < MAX_TOK; ) {
+    uint8_t t = p.data[i];
+    if (t == 0x1F && i - 1 >= first && i - 1 - p.data[i - 1] >= first) {
+      // positive integer: value bytes | length | 1F
+      uint8_t len = p.data[i - 1];
+      int start = i - 1 - len;
+      uint32_t v = 0;
+      for (int k = start; k < i - 1; k++) v = (v << 8) | p.data[k];
+      tok[n++] = String(v);
+      i = start - 1;
+    } else if (t == 0xF0 && i - 1 >= first) {
+      // the function's own parameter: variable | F0
+      tok[n++] = tiToken(p.data[i - 1]);
+      i -= 2;
+    } else {
+      tok[n++] = tiToken(t);
+      i--;
+    }
+  }
+
+  rpn = "";
+  for (int k = n - 1; k >= 0; k--) {
+    rpn += tok[k];
+    if (k) rpn += " ";
+  }
+  return true;
+}
+
 void handleVar() {
   printVarHeader(pkt);
+  String varName = headerName(pkt);
   if (!pkt.checksumOk) {
     Serial.println("! header checksum bad, ignoring");
     return;
@@ -279,15 +379,19 @@ void handleVar() {
   // Decode while the data is still in pkt, but print after the ACK so the
   // calculator isn't kept waiting.
   static char str[MAX_DATA + 1];
-  bool listOk = false, strOk = false;
+  String params, rpn;
+  bool listOk = false, strOk = false, funcOk = false;
   if (pkt.checksumOk) {
     if (varType == 0x04 && cblMode) listOk = parseList(pkt);  // Send {...}: text list
     else if (varType == 0x0C) strOk = decodeString(pkt, str, sizeof(str));
+    else if (varType == 0x13) funcOk = decodeFunction(pkt, params, rpn);
   }
   if (!sendPacket(CMD_ACK)) return;
 
   if (listOk) printList();
   else if (strOk) Serial.printf("   string: \"%s\"\n", str);
+  else if (funcOk) Serial.printf("   function: %s(%s), body in reverse Polish: %s\n",
+                                 varName.c_str(), params.c_str(), rpn.c_str());
   else Serial.printf("   (type 0x%02X: not decoded yet, raw bytes above)\n", varType);
 
   // An EOT may follow; acknowledge it if it does.
