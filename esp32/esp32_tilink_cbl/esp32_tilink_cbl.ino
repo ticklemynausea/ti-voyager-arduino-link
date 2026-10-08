@@ -14,12 +14,14 @@
  *   calc -> EOT   (may or may not be sent)
  *   ESP  -> ACK
  *
- * This version prints every packet and dumps the DATA bytes raw, so the
- * list encoding can be worked out from real captures.
+ * SendCalc (calculator-to-calculator) uses the same exchange; only the
+ * machine IDs and the DATA format differ.
  *
- * The machine ID the ESP32 replies with is a best guess (0x19). If the
- * calculator stops after our ACK/CTS, try another one from the Serial
- * Monitor:  id 09   id 08   id 18   id 19
+ * Prints every packet, dumps DATA bytes raw, and decodes what is known:
+ *   lists from Send {...}   and   strings from SendCalc.
+ *
+ * The reply machine ID is picked automatically (see replyIdFor);
+ * "id <hex>" / "id auto" in the Serial Monitor override it.
  *
  * Serial Monitor: 115200 baud, newline line ending.
  * Needs TiLink.h / TiLink.cpp in the same folder.
@@ -39,9 +41,8 @@ enum : uint8_t {
   CMD_REQ  = 0xA2, CMD_RTS = 0xC9
 };
 
-TiLink ti(PIN_TIP, PIN_RING);
-uint8_t deviceId = 0x19;
-
+// Defined before any function: the Arduino build inserts auto-generated
+// function prototypes above the first function, and they need this type.
 struct Packet {
   uint8_t  id, cmd;
   uint16_t len;              // length field from the header
@@ -50,6 +51,21 @@ struct Packet {
   uint8_t  data[MAX_DATA];
 };
 Packet pkt;
+
+TiLink ti(PIN_TIP, PIN_RING);
+
+// Machine ID the ESP32 puts on its replies. Chosen per transfer:
+//   calc sends with 0x89 (Send, CBL mode)        -> reply as a CBL, 0x19
+//   calc sends with 0x88 (SendCalc, V200/92+)    -> reply with the same ID
+// Both confirmed on a real Voyage 200. "id <hex>" in the Serial Monitor
+// forces a fixed value instead; "id auto" goes back to automatic.
+uint8_t deviceId = 0x19;
+uint8_t idOverride = 0;   // 0 = automatic
+
+uint8_t replyIdFor(uint8_t senderId) {
+  if (idOverride) return idOverride;
+  return (senderId == 0x89) ? 0x19 : senderId;
+}
 
 // ---------- helpers ----------
 
@@ -233,21 +249,46 @@ void printVarHeader(const Packet &p) {
   Serial.println();
 }
 
+// String sent with SendCalc (from a real capture of "six seven"):
+//   00 00 00 00 | size (2 bytes, BIG-endian) | 00 | text | 00 | 2D (string tag)
+bool decodeString(const Packet &p, char *out, uint16_t outSize) {
+  if (p.stored < 9 || p.data[6] != 0x00 || p.data[p.stored - 1] != 0x2D) return false;
+  uint16_t n = 0;
+  for (uint16_t i = 7; i < p.stored - 1 && p.data[i] != 0 && n + 1 < outSize; i++)
+    out[n++] = (char)p.data[i];
+  out[n] = 0;
+  return true;
+}
+
 void handleVar() {
   printVarHeader(pkt);
   if (!pkt.checksumOk) {
     Serial.println("! header checksum bad, ignoring");
     return;
   }
+  uint8_t varType = (pkt.stored >= 5) ? pkt.data[4] : 0xFF;
+  bool cblMode = (pkt.id == 0x89);
+  deviceId = replyIdFor(pkt.id);
 
   if (!sendPacket(CMD_ACK)) return;
   if (!sendPacket(CMD_CTS)) return;
 
   if (!expect(CMD_ACK)) return;
   if (!expect(CMD_DATA)) return;
-  bool listOk = pkt.checksumOk && parseList(pkt);
+
+  // Decode while the data is still in pkt, but print after the ACK so the
+  // calculator isn't kept waiting.
+  static char str[MAX_DATA + 1];
+  bool listOk = false, strOk = false;
+  if (pkt.checksumOk) {
+    if (varType == 0x04 && cblMode) listOk = parseList(pkt);  // Send {...}: text list
+    else if (varType == 0x0C) strOk = decodeString(pkt, str, sizeof(str));
+  }
   if (!sendPacket(CMD_ACK)) return;
+
   if (listOk) printList();
+  else if (strOk) Serial.printf("   string: \"%s\"\n", str);
+  else Serial.printf("   (type 0x%02X: not decoded yet, raw bytes above)\n", varType);
 
   // An EOT may follow; acknowledge it if it does.
   int r = recvPacket(pkt, 1000000);
@@ -266,11 +307,14 @@ String line;
 
 void handleCommand(String cmd) {
   cmd.trim();
-  if (cmd.startsWith("id ")) {
-    deviceId = (uint8_t)strtoul(cmd.c_str() + 3, nullptr, 16);
-    Serial.printf("reply machine id is now 0x%02X\n", deviceId);
+  if (cmd == "id auto") {
+    idOverride = 0;
+    Serial.println("reply machine id: automatic (0x19 for Send, sender's id for SendCalc)");
+  } else if (cmd.startsWith("id ")) {
+    idOverride = (uint8_t)strtoul(cmd.c_str() + 3, nullptr, 16);
+    Serial.printf("reply machine id forced to 0x%02X\n", idOverride);
   } else if (cmd.length()) {
-    Serial.println("commands:  id <hex>   (e.g. id 19)");
+    Serial.println("commands:  id auto   |   id <hex>   (e.g. id 88)");
   }
 }
 
@@ -280,8 +324,8 @@ void setup() {
   delay(500);
   Serial.println("\nTI link CBL emulator ready.");
   Serial.printf("Line idle: %s\n", ti.lineIdle() ? "yes" : "NO - check wiring / calculator on?");
-  Serial.printf("Replying with machine id 0x%02X (change with: id <hex>)\n", deviceId);
-  Serial.println("Run  Send {1,2,3}  on the calculator.\n");
+  Serial.println("Reply machine id: automatic (override with: id <hex>, back with: id auto)");
+  Serial.println("Try  Send {1,2,3}  or  \"hello\"->s : SendCalc s  on the calculator.\n");
 }
 
 void loop() {
