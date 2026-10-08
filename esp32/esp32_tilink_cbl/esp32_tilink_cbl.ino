@@ -172,6 +172,53 @@ bool expect(uint8_t cmd) {
   return true;
 }
 
+// ---------- list decoding ----------
+//
+// DATA payload for a list sent with Send {...} (from real captures):
+//   count (4 bytes, little-endian) | " v1 v2 v3 ..." (ASCII) | 00
+// e.g. {-1.5,2000000,1/3} -> 03 00 00 00 " -1.5 2E+6 0.33333" 00
+// The calculator converts every element to decimal text itself.
+
+const uint16_t MAX_LIST = 64;
+double   lastList[MAX_LIST];
+uint16_t lastListLen = 0;
+
+bool parseList(const Packet &p) {
+  lastListLen = 0;
+  if (p.stored < 5) return false;
+  uint32_t count = p.data[0] | (p.data[1] << 8) | ((uint32_t)p.data[2] << 16) |
+                   ((uint32_t)p.data[3] << 24);
+
+  // copy the text part into a NUL-terminated buffer
+  static char text[MAX_DATA + 1];
+  uint16_t n = 0;
+  for (uint16_t i = 4; i < p.stored && p.data[i] != 0; i++) text[n++] = (char)p.data[i];
+  text[n] = 0;
+
+  const char *s = text;
+  while (*s && lastListLen < MAX_LIST) {
+    char *end;
+    double v = strtod(s, &end);
+    if (end == s) break;           // no more numbers
+    lastList[lastListLen++] = v;
+    s = end;
+  }
+
+  if (lastListLen != count) {
+    Serial.printf("! expected %lu elements, parsed %u from \"%s\"\n",
+                  (unsigned long)count, lastListLen, text);
+    return false;
+  }
+  return true;
+}
+
+void printList() {
+  Serial.print("   list: {");
+  for (uint16_t i = 0; i < lastListLen; i++)
+    Serial.printf("%s%.10g", i ? ", " : "", lastList[i]);
+  Serial.println("}");
+}
+
 // ---------- Send {...} from the calculator ----------
 
 void printVarHeader(const Packet &p) {
@@ -198,7 +245,9 @@ void handleVar() {
 
   if (!expect(CMD_ACK)) return;
   if (!expect(CMD_DATA)) return;
+  bool listOk = pkt.checksumOk && parseList(pkt);
   if (!sendPacket(CMD_ACK)) return;
+  if (listOk) printList();
 
   // An EOT may follow; acknowledge it if it does.
   int r = recvPacket(pkt, 1000000);
