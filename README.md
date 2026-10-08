@@ -46,7 +46,7 @@ Things learned the hard way:
 
 | Path | What it is |
 |---|---|
-| `esp32/esp32_tilink_cbl/` | **Current main experiment.** Makes the ESP32 answer TI-BASIC `Send {...}` like a CBL, and `SendCalc` like another calculator, then decodes lists and strings. |
+| `esp32/esp32_tilink_cbl/` | **Current main experiment.** Makes the ESP32 answer TI-BASIC `Send {...}` like a CBL, and `SendCalc` like another calculator, then decodes lists, strings and (shallowly) functions. |
 | `esp32/esp32_tilink_sniffer/` | Receive-only sniffer: acknowledges every byte and prints TI packets in hex. |
 | `esp32/esp32_tilink_linetest/` | Prints raw tip/ring states; for checking the wiring. |
 | `esp32/esp32_tilink_pingpong/` | Ping-pong demo using a simple custom frame format. Needs `calculator/pingpong.c` on the calculator. |
@@ -93,7 +93,39 @@ Observed on a Voyage 200 with the sketches in this repo:
 - **`SendCalc`** uses the same exchange with machine ID `0x88`, and needs replies
   carrying `0x88` too. A string arrives as
   `00 00 00 00 | size (2 bytes, big-endian) | 00 | text | 00 | 2D`.
+- **Functions** (`SendCalc` of a function, type `0x13`) arrive in the calculator's
+  internal tokenized form, not as text:
+  `00 00 00 00 | size (2 bytes BE) | E9 | body | E5 | parameters | 00 | ?? | 40 | DC`.
+  The body is in reverse-Polish order (operands before operators). Tokens confirmed
+  from captures: `08` x, `0B`-`1A` the letters a-p (`18` = n), `08 F0` x as the
+  function's own parameter, `<value> <length> 1F` a positive integer, `28` ∞,
+  `7A` negate, `93` ^, `BA` ∑, and `E5` marking where ∑'s arguments start. For
+  example ζ(x) = ∑(1/n^x, n, 1, ∞) is stored as `n^(-x)`:
+  `E5 28 | 01 01 1F | 18 | 08 F0 7A 18 93 | BA`. The CBL sketch prints function
+  bodies as a token list using these; it does not rebuild the formula.
 - **Not done yet:** `Get` (the ESP32 sending values back to the calculator).
+
+### Character set
+
+The calculator does not use Unicode. Names and text use TI's own 8-bit character
+set: one byte per character, with `0x20`-`0x7E` matching ASCII and TI's own
+symbols (Greek letters, math symbols, accented letters) from `0x80` up.
+
+**This is a known gap.** Only one non-ASCII code is confirmed: `0x87` = ζ, from a
+function named ζ. The sketches therefore print any other code above `0x7E` as
+`\xNN`. Greek letters probably run in order from `0x80` (α, β, Γ, γ, Δ, δ, ε, ζ…),
+which fits ζ at `0x87`, but that is unverified. To fill in the table, store a
+string containing the characters of interest, send it with `SendCalc`, and read
+the codes from the hex dump. Whether strings use the same codes as variable
+names is also still to be confirmed.
+
+### Open questions
+
+- The last byte of the VAR header is `00` for strings and `01` for functions whose
+  body uses the parameter, but `00` for `f(x)=∞`. Its meaning is unknown.
+- In function data, the byte before `40 DC` was `01` only for ζ (perhaps related
+  to ∑'s local variable `n`), and the meaning of `40` is unknown.
+- Byte order of integers wider than one byte has not been checked.
 
 ## Credits
 
