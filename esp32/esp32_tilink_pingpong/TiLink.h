@@ -47,13 +47,14 @@ public:
   // ---- tuning / stats ----
   uint32_t edgeTimeoutUs = 100000;   // max wait for any handshake edge
   uint32_t byteTimeoutUs = 1000000;  // max gap between bytes inside a frame
+  uint32_t ackSettleUs = 50;         // time allowed for our released ack line to rise
   uint32_t framesSent = 0, framesRecv = 0, errors = 0;
 
   // ---- diagnostics: details of the most recent layer-1 failure ----
   // stage: 1 = recv, line went idle/timed out between bits
   //        2 = recv, both lines low at the start of a bit
   //        3 = recv, sender never released its line after our ack
-  //        4 = recv, our ack line didn't rise after we released it
+  //        4 = (unused; a low ack line after release is the next bit)
   //        5 = send, lines not idle before a bit
   //        6 = send, receiver never acked
   //        7 = send, receiver never released its ack

@@ -70,7 +70,7 @@ const char *TiLink::lastErrText() {
     case 1: return "recv: timed out waiting for next bit";
     case 2: return "recv: both lines low at start of bit";
     case 3: return "recv: sender never released after our ack";
-    case 4: return "recv: our ack line didn't rise after release";
+    case 4: return "recv: (unused)";
     case 5: return "send: lines not idle before bit";
     case 6: return "send: receiver never acked";
     case 7: return "send: receiver never released ack";
@@ -128,9 +128,13 @@ int TiLink::recvByte(uint32_t firstBitTimeoutUs) {
     bool ok = waitFor(sig, false, edgeTimeoutUs);  // sender lets go
     if (!ok) noteErr(3, i, value);
     release(ack);
-    // make sure our own ack line has actually risen before looking for the next bit
-    if (ok && !waitFor(ack, false, edgeTimeoutUs)) { noteErr(4, i, value); ok = false; }
     if (!ok) { fail(); return -2; }
+    // Give our ack line a moment to rise. Don't insist on seeing it high:
+    // the calculator reacts to the rising edge (at its own, lower threshold)
+    // and may already be pulling this same line low again for the NEXT bit.
+    // If it is still low after the settle time, that low is the next bit,
+    // and the next loop iteration (or the next recvByte call) reads it.
+    waitFor(ack, false, ackSettleUs);
   }
   return value;
 }
