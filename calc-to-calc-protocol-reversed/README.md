@@ -67,7 +67,7 @@ Open the monitor, recording everything into a log file. macOS's `script`
 keeps the monitor interactive, so you can still type commands:
 
 ```sh
-script -q calc-to-calc-protocol-reversed/captures/2026-10-09.log \
+script -q calc-to-calc-protocol-reversed/captures/$(date +%Y-%m-%d_%H%M%S).log \
   arduino-cli monitor -p /dev/cu.usbmodem14301 -c baudrate=115200
 ```
 
