@@ -333,6 +333,15 @@ void onEvent(const LinkEvent &ev) {
     Serial.printf(" and let go without an acknowledgement (%u bits into the byte)\n", ev.bits);
     dumpAround(ev.t, 24, 120, "unacknowledged pull");
     break;
+  case LinkEvent::PROBE:
+    // A pulse, not data (see BitDecoder.h). Shown so it can be placed in time.
+    Serial.print("  probe at ");
+    printTime(toUs(ev.t));
+    Serial.printf(": %s pulled, both low for ", ev.value ? "ring" : "tip");
+    printDuration(ev.dur);
+    if (ev.bits) Serial.printf(" (inside a byte, after %u bits)", ev.bits);
+    Serial.println();
+    break;
   case LinkEvent::STUCK:
     Serial.print("! a line has been held low since ");
     printTime(toUs(ev.t));
@@ -443,10 +452,10 @@ void printStats() {
   Serial.printf("bytes %lu  packets %lu  bad checksums %lu\n", (unsigned long)dec.bytes,
                 (unsigned long)packets, (unsigned long)badChecksums);
   Serial.printf("ambiguous bits %lu  partial bytes %lu  unacked bits %lu  held lines %lu  "
-                "buffer overflows %lu\n",
+                "buffer overflows %lu  probes %lu\n",
                 (unsigned long)dec.ambiguousBits, (unsigned long)dec.partials,
                 (unsigned long)dec.noacks, (unsigned long)dec.stucks,
-                (unsigned long)overflows);
+                (unsigned long)overflows, (unsigned long)dec.probes);
   if (dec.maxBitTicks)
     Serial.printf("time between bits in a byte: min %lu ns  max %lu ns\n",
                   (unsigned long)cyclesToNs(dec.minBitTicks),
@@ -481,7 +490,7 @@ void handleCommand(String line) {
   } else if (cmd == "stats") {
     printStats();
   } else if (cmd == "zero") {
-    dec.bytes = dec.partials = dec.noacks = dec.ambiguousBits = dec.stucks = 0;
+    dec.bytes = dec.partials = dec.noacks = dec.ambiguousBits = dec.stucks = dec.probes = 0;
     dec.minBitTicks = 0xFFFFFFFF;
     dec.maxBitTicks = 0;
     packets = badChecksums = overflows = maxGapCycles = 0;
@@ -581,6 +590,7 @@ void loop() {
 
   dec.midByteTicks = 50000 * cyclesPerUs;      // 50 ms
   dec.stuckTicks = 1000000 * cyclesPerUs;      // 1 s
+  dec.probeTicks = 50 * cyclesPerUs;           // 50 us
 
   sampleForever(tipBit, ringBit);
 }

@@ -72,7 +72,10 @@ For **T08a**, make a text file on A: `APPS` → Text Editor → New, name `t1`, 
 
 ## Encodings
 
-Use T01's method (VAR-LINK Receive on B, Send on A), unless noted. For T04, set
+Send each variable with `SendCalc <name>` on A, with B idle at the Home
+screen; B overwrites without asking. T01–T03 showed this sends exactly the
+same packets as VAR-LINK, minus VAR-LINK's RDY check. VAR-LINK is only needed
+for T11–T13. For T04, set
 `a` on A before each sub-test, and delete `a` on B between sub-tests (or answer
 Yes to overwrite, and note it).
 
@@ -128,6 +131,6 @@ Yes to overwrite, and note it).
 |---|---|---|
 | T18 | B at Home: `GetCalc a`. A: `SendChat a` (skip if `SendChat` doesn't exist) | chat variant of SendCalc |
 | T19 | Repeat T01 twice (`mark T19-1`, `mark T19-2`) | what changes between identical runs |
-| T20 | Optional: VAR-LINK `F7` FlashApps on A, send a small app B doesn't have | Flash app transfer (long; skip if unsure) |
+| T20 | Optional, run last: **B sends to A** (B has apps A lacks). VAR-LINK `F7` FlashApps on B, send the smallest app A doesn't have; A in Receive. Check both calculators' batteries first. A needs free archive space; the app can be deleted from A afterwards. Mark it `T20 B to A, app <name>` | Flash app transfer (long) |
 
 Finish with `stats` and send me the log from `captures/`.

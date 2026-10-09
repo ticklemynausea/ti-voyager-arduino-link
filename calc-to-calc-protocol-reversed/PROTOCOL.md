@@ -1,7 +1,14 @@
 # Voyage 200 calculator-to-calculator link protocol
 
-**Status: in progress.** T01–T05 are captured (`captures/`); T04–T05 are in
-`captures/2026-10-09_190006.log`. Each section is filled in from the tests
+**Status: all tests captured; some questions open (section 8).** The logs are
+in `captures/`:
+- T04–T05: `2026-10-09_190006.log`;
+- T06–T12: `2026-10-09_192238.log`;
+- T13–T20: `2026-10-09_201528.log`. That log has a test marked "T13" between
+  T13c and T15, which is taken here to be T14.
+
+From T06 on, variables were sent with `SendCalc` to B idle at Home, except
+T09a's first run, T11 and T12, which used VAR-LINK. Each section is filled in from the tests
 in [TESTS.md](TESTS.md), and every finding cites the test ID that showed it.
 
 Each section has two parts:
@@ -61,9 +68,12 @@ Observed:
 - VAR and DATA carry data, with a correct checksum in every capture.
 - ACK, CTS, EOT and RDY are header only.
 - **The length field of a header-only packet isn't always 0.** The ACK that
-  answers RDY has length `0x100C` (4108), with no data following (T01).
-
-To confirm: the maximum DATA size (T17), and what `0x100C` means.
+  answers RDY has length `0x100C` (4108), or sometimes `0x110C`, with no data
+  following (T01; section 8).
+- **A variable's data goes in a single DATA packet.** The biggest seen was
+  10008 bytes (T17), sent in 1.04 s at 9.6 kB/s. Only Flash apps are split
+  into several packets (5.10).
+- **CONT (`78`)** is header only (T20).
 
 ## 3. Machine IDs
 
@@ -76,6 +86,8 @@ Observed (T01–T03):
 - **The RDY check and its ACK use `0x89`**, both ways (T01). That is the same
   ID a Voyage 200 uses for the CBL-style `Send` (main README).
 
+- **`SendChat` uses `0x89`** for every packet of its transfer (T18).
+
 Inferred: since both sides use the same ID, a packet's direction can't be
 read from the ID. It follows from the command order: the side that sends VAR
 also sends DATA and EOT, and the other side sends CTS. ACKs alternate between
@@ -85,16 +97,17 @@ the two.
 
 | Code | Name | Data | Seen in |
 |---|---|---|---|
-| 06 | VAR | variable header | T01–T03 |
-| 09 | CTS | — | T01–T03 |
-| 15 | DATA | variable contents | T01–T03 |
-| 36 | SKIP | reason code | |
-| 56 | ACK | — (length field `0x100C` when answering RDY) | T01–T03 |
-| 5A | ERR | — | |
-| 68 | RDY | — | T01 |
-| 92 | EOT | — | T01–T03 |
-| A2 | REQ | variable header | |
-| C9 | RTS | variable header | |
+| 06 | VAR | variable header | all transfers |
+| 09 | CTS | — | all transfers |
+| 15 | DATA | variable contents | all transfers |
+| 36 | SKIP | reason code | not seen, not even for "No" to an overwrite (T13b) |
+| 56 | ACK | — (length field `0x100C` or `0x110C` when answering RDY) | all transfers |
+| 5A | ERR | — | not seen |
+| 68 | RDY | — | VAR-LINK |
+| 78 | CONT | — | Flash app transfer (T20) |
+| 92 | EOT | — | all transfers |
+| A2 | REQ | variable header | not seen between calculators |
+| C9 | RTS | variable header | not seen between calculators |
 
 ## 5. Sequences
 
@@ -130,6 +143,8 @@ Observed:
   | idle at Home (T02) | 40 ms | 14 ms |
   | waiting in `GetCalc` (T03) | 1.5 ms | 4.9 ms |
 
+- **Transfers are deterministic (T19):** two identical sends gave
+  byte-identical packets. Only the timing differed.
 - **`GetCalc` starts nothing.** In T03, B sent no request (no REQ). It waited
   for A's VAR, and the exchange is identical to T02. A calculator at Home
   accepts the same transfer silently.
@@ -178,7 +193,7 @@ Inferred:
 - **T01's third RDY is not yet explained.** A opening VAR-LINK sent nothing in
   the rerun. Maybe B opened VAR-LINK twice in T01.
 
-### 5.3 Several variables (seen in the first T05a attempt; T11 to confirm)
+### 5.3 Several variables (T11, and the first T05a attempt)
 
 Some variables were still selected in VAR-LINK from T04, so the first T05a
 attempt sent `a` and `s0` together:
@@ -195,17 +210,162 @@ Observed:
   about 30 ms after the previous DATA's ACK.
 - **One EOT ends the whole batch.**
 
-A second attempt, sending `a` and `s1`, lost the first byte of its VAR
-(sniffer bug). What was left of it shows the same pattern, with a 2.5 s pause
-in the middle, perhaps while B asked whether to overwrite `a`. T13 will
-capture that cleanly.
+**T11** (`a`, `l1` and `s1` selected together) confirms it: three VARs in a
+row, each 22 ms after the previous DATA's ACK, and one EOT at the end.
 
-### 5.4 Folders, T12
-### 5.5 Variable already exists: overwrite / skip / rename, T13
-### 5.6 Receiver not listening, T14
-### 5.7 Aborts, T15–T16
-### 5.8 Large variables, T17
-### 5.9 `SendChat`, T18
+**An overwrite prompt** (T11: B already had `s1`, and asked):
+- **B holds back its ACK to the VAR** until the user answers. The ACK came
+  2.99 s after the VAR, followed as usual by CTS.
+- **The prompt adds no packets of its own.**
+- B's final ACK to the EOT also took longer than usual: 0.6 s.
+
+A second T05a attempt, sending `a` and `s1`, lost the first byte of its VAR
+(sniffer bug). What was left of it shows the same 2.5 s pause, consistent with
+an overwrite prompt for `a`.
+
+### 5.4 Folders (T09a, T12)
+
+- **Sending a variable from inside folder `tst` (T09a)** sends only its name:
+  `b`. The receiver files it in its own current folder, presumably.
+  - Both VAR-LINK and `SendCalc` do this.
+- **Sending the folder itself (T12)** sends each variable with its folder in
+  the name: `tst\b`, in an ordinary VAR, with `5C` (`\`) as the separator.
+  - There is no separate packet for the folder.
+  - The folder held only `b`, so it's not yet known how several variables in
+    a folder are sent.
+
+### 5.5 Variable already exists (T13, T17, T19)
+
+**In VAR-LINK Receive, B asks after the data has arrived.** The transfer runs
+as usual; B then holds back its ACK to the final EOT until the user answers:
+
+| Test | Answer | After A's EOT |
+|---|---|---|
+| T13a | Yes (overwrite) | B's ACK after 3.23 s |
+| T17, T19-2 | Yes | B's ACK after 2.31 s and 2.18 s |
+| T13b | No | **no ACK at all** |
+| T13c | Rename offered but disabled | no ACK |
+
+Observed:
+- **No SKIP (`36`) packet is ever sent.** Refusing the variable just means
+  the EOT is never acknowledged.
+- **In T11 (several variables), the delay came at the third variable's VAR**
+  instead (2.99 s before B's ACK), with the final EOT acknowledged after
+  0.6 s.
+
+Inferred: A has no way to tell "No" apart from a lost link, other than by
+timing out. (What did A show in T13b and T13c?)
+
+### 5.6 Receiver busy (T14: B in the MODE dialog)
+
+```
+A: RDY  ->  B: ACK (0x110C)
+A: VAR  ->  (nothing)
+```
+
+- **B never acknowledges the VAR.** A shows "ERROR: Link Transmission".
+- **The only other activity is probe pulses** (5.11), 22 ms and 1.8 s after
+  the VAR.
+- **B's OS still answers RDY** while in the dialog.
+
+### 5.7 Aborts (T15, T16)
+
+Both tests sent the 10 KB list `big` and pressed ON partway through.
+
+- **ON on A, the sender (T15):** the DATA packet still completed, all 10008
+  bytes with a correct checksum, in 1.17 s against the usual 1.04 s. Then
+  nothing more: B never acknowledged the DATA, and A sent no EOT. Only probe
+  pulses followed.
+- **ON on B, the receiver (T16):** the DATA packet also completed, but took
+  1.82 s.
+  - Over the second half of the packet, seven extra pulses were mixed in
+    between the data bits. The old decoder counted each as a 0 bit, which
+    shifted the data and broke the checksum.
+  - With those seven bits removed, the packet matches T17's byte for byte,
+    checksum included.
+  - After the DATA, again nothing but probe pulses.
+
+Inferred:
+- **Neither calculator stops mid-packet.** The ON key is only acted on
+  between packets.
+- **An abort is silent:** no ERR or SKIP, the other side just gets no
+  further packets.
+- **The pulses during T16** look like the probes in 5.11, made while B
+  handled the ON key. The decoder now classifies such pulses as probes, but
+  these seven had already scrolled out of the line history, so that is not
+  confirmed for them.
+
+### 5.8 Large variables (T17)
+
+The 10 KB list went as one 10008-byte DATA packet, in 1.04 s (9.6 kB/s), and
+decoded correctly. Its elements are floats such as
+`40 02 14 28 57 14 28 57 14 23` (142.85714285714) and
+`3F FF 14 28 57 14 28 57 14 23` (0.14285714285714): exponents below 10⁰ go
+under the bias `0x4000`.
+
+### 5.9 `SendChat` (T18: B in `GetCalc`, A `SendChat a`)
+
+The same packets as `SendCalc`, byte for byte, except that **every packet
+carries machine ID `0x89` instead of `0x88`**, on both sides. There was no
+RDY.
+
+### 5.10 Flash application (T20: B sends the app "TIESP", Español, to A)
+
+```
+B: VAR (type 24, name "TIESP", size 39907)   ->  A: ACK
+                                             <-  A: CTS        (1.35 s later)
+B: ACK, DATA (7016 bytes)                    ->  A: ACK
+B: CONT                                      ->  A: ACK, CTS
+B: ACK, DATA (4976 bytes)                    ->  A: ACK
+   ... CONT / ACK, CTS / ACK, DATA / ACK, for each part ...
+B: EOT                                       ->  A: ACK        (2.2 s later)
+?: EOT                                       ->  ?: ACK        (10 ms later)
+```
+
+Observed:
+- **The app is sent in 12 DATA packets** of 7016, 4976, 1022, 1020 (seven
+  times), 660, 17914, 988 and 191 bytes. Together that is exactly 39907
+  bytes, the size in the VAR header.
+- **Unlike variable data, these packets have no `00 00 00 00 | length`
+  prefix.** They are the app's raw bytes.
+  - The first starts with TI's Flash header (`81 0E … 81 45 "TIESP" …`).
+  - The 17914-byte part holds the Spanish strings ("DD/MM/YYYY", "Español",
+    "¿1º Vértice?").
+- **Each further part is announced by CONT (`78`)**, presumably from the
+  sender, and answered with ACK and CTS.
+- **The VAR header's byte after the name** is `03`, as for the GDB.
+- **A answered the VAR immediately, but took 1.35 s to send CTS.** It took
+  2.2 s to acknowledge the end: probably erasing and writing Flash.
+- **The transfer ends with two EOT/ACK pairs, 10 ms apart.** Which side sends
+  the second EOT isn't known.
+- **Throughput was 9.0 kB/s per packet,** and the whole app took about 9 s.
+
+**A false start** before T20 shows a send with nothing in it: RDY/ACK,
+another RDY/ACK, then a lone EOT and its ACK.
+
+### 5.11 Probe pulses
+
+Observed in nearly every session:
+- **About 16 ms after a transfer ends,** and again repeatedly afterwards.
+- **While a transfer is held up** (5.6, 5.7).
+
+The waveform, from the line history (T13–T19):
+1. One calculator pulls tip.
+2. The other acknowledges on ring within about 1 µs.
+3. The first holds tip for 193–202 µs, then lets go.
+4. The ring is let go 0.5 µs later.
+
+That is like a single 0 bit, but the both-low phase lasts about 200 µs
+instead of about 1 µs. The pulses come in threes, about 16.5 ms apart, and
+the groups repeat every 4.47 s.
+
+Inferred:
+- **These pulses are not data:** no byte ever follows them.
+- **They look like a calculator's OS checking, in software, whether the other
+  side is there.** The 1 µs answers to every bit, and the 200 µs holds here,
+  suggest the normal bit handshake is done by the link hardware.
+- **The sniffer now reports them as `probe` lines** and doesn't count them as
+  bits. The old decoder reported a probe on its own as a 1-bit partial byte.
 
 ## 6. Variable header (VAR / RTS)
 
@@ -222,14 +382,22 @@ size (LE32) | type | name length | "a" | ?
 - **`size` is little-endian:** 305 is sent as `31 01 00 00`.
 - **The type** was `00` for every T04 value (numbers, fractions, complex
   numbers, `x+1`) and `0C` for strings.
-- **The byte after the name** was `00`. It is probably attributes (locked,
-  archived): T10.
+- **The name** is in TI's character set. `λ` is sent as `89` (T09c), and an
+  8-character name works (T09b). A name sent with its folder uses `\`:
+  `tst\b` (T12).
+- **The byte after the name is not the lock or archive state.** It was `00`
+  for the locked `lk` and the archived `ar` (T10a–b), just as for ordinary
+  variables. It was:
 
-To find out:
-- folder names (T09a);
-- the bytes after the name: attributes for locked and archived variables
-  (T10);
-- name encoding (T09c, using the character set in the main README).
+  | Value | Seen for |
+  |---|---|
+  | `00` | numbers, strings, lists, matrices, programs, text, pictures, data |
+  | `01` | functions (T07a, and the main README's captures) |
+  | `03` | the GDB `g1` (T08d) and the Flash app (T20) |
+
+  Its meaning is unknown.
+- **Locked and archived variables** arrive like any other. Whether B keeps
+  them locked or archived wasn't checked.
 
 ## 7. Data encodings
 
@@ -244,7 +412,7 @@ Every DATA payload is laid out the same way:
   tags that is read **from the end backwards**. The last byte is the outermost
   tag, and each tag's operands come before it.
 
-Tags observed so far (T01–T05, plus the function captures in the main
+Tags observed so far (T01–T08, plus the function captures in the main
 README):
 
 | Tag | Meaning | Operands, reading backwards from the tag | Seen in |
@@ -258,6 +426,13 @@ README):
 | `8F` | × | two operands | T04f |
 | `08` | variable x | none | T04g |
 | `2D` | string | `00`, the text, `00` (reading forwards) | T05 |
+| `D9` | list | elements, first element nearest the tag, closed by `E5` | T06 |
+| `E5` | end of a list or of arguments | none | T06, T07 |
+| `DC` | function or program | see below | T07 |
+| `E0` | text file | see below | T08a |
+| `DF` | picture | see below | T08b |
+| `DD` | data variable | see below | T08c |
+| `DE` | GDB | see below | T08d |
 
 These values match the expression tags in the TIGCC documentation (`estack.h`,
 for example `POSINT_TAG` 1F, `FLOAT_TAG` 23, `ADD_TAG` 8B, `MUL_TAG` 8F,
@@ -279,38 +454,85 @@ Worked examples (content only, after the length):
 | T05a | `""` | `00 00 2D` | empty string |
 | T05b | `"a"` | `00 61 00 2D` | one character |
 | T05c | 300 digits | `00 "1000…0" 00 2D` | length `01 2F` = 303 |
+| T06a | {1,2,3} | `E5 03 01 1F 02 01 1F 01 01 1F D9` | list: 1, 2, 3, end |
+| T06b | {"a","b"} | `E5 00 62 00 2D 00 61 00 2D D9` | list: "a", "b", end |
+| T06c | [[1,2][3,4]] | `E5 E5 04 01 1F 03 01 1F D9 E5 02 01 1F 01 01 1F D9 D9` | a list of row lists: {1,2}, {3,4}. The VAR type (`06`) is what makes it a matrix |
 
 - **T04d** was entered as `1.1E100` (the test plan said `1.E100`), which
   matches the digits.
 - **T05b's** string was entered as lowercase `"a"`.
 
+**Functions and programs (T07):**
+
+```
+E9 | body | E5 | parameters | 00 | ?? | 40 | DC      (reading forwards)
+```
+
+- **`f(x)=x^2` (T07a):** body `02 01 1F 08 F0 93` (x^2, with `08 F0` meaning
+  the parameter x), parameters `08` (x), then `00 00 40 DC`.
+- **`p()=Prgm:Disp "hi":EndPrgm` (T07b):** body
+  `12 E4 00 E7 E5 00 68 69 00 2D 7A E4 00 E7 19 E4`, no parameters, then
+  `00 00 40 DC`.
+- **Inferred, reading backwards:**
+  - `19 E4` is one command (Prgm), with `E4` the command tag and the byte
+    before it the command number;
+  - `00 E7` ends a statement;
+  - `7A E4`, preceded by `E5 "hi"`, is `Disp "hi"`;
+  - `12 E4` is EndPrgm.
+
+  Note that `7A` is a command number here, but was negation in an
+  expression (main README): the meaning of a byte depends on the tag around
+  it.
+
+**Text (T08a):** `00 06 | 20 "hello" 00 | E0`.
+- `00 06` is probably the cursor position: 6 is the end of the text.
+- Each line starts with a one-character mark (a space here), as in the text
+  editor.
+
+**Picture (T08b):** `00 67 | 00 EF | rows | DF`.
+- That is 103 rows by 239 columns: the full graph screen.
+- Each row is 30 bytes, one bit per pixel. 103 × 30 + 4 + 1 = 3095, the DATA
+  length.
+- The 3101-byte DATA went in a single packet, at 9.6 kB/s.
+
+**Data variable (T08c), `NewData d1,{1,2},{3,4}`:**
+`04 02 01 00 08 E5 {1,2} D9 02 00 08 E5 {3,4} D9 00 00 DD`.
+- The two columns are ordinary lists.
+- The bytes around them (`04 02 01 00 08`, `02 00 08`, `00 00`) are not
+  decoded yet.
+
+**GDB (T08d):** 236 bytes ending in `D9 DE`, with floats (`23`) inside. Not
+decoded yet.
+
 | Type | Code | Test | Layout |
 |---|---|---|---|
 | expression / number | 00 | T01–T04 | expression tags, see above |
 | string | 0C | T05 | `00 \| text \| 00 \| 2D` |
-| list | 04 | T06a–b | |
-| matrix | 06 | T06c | |
-| function | 13 | T07a | |
-| program | 12 | T07b | |
-| text | 0B | T08a | |
-| picture | 10 | T08b | |
-| data | 0A | T08c | |
-| GDB | 0D | T08d | |
+| list | 04 | T06a–b | `E5 \| elements \| D9` |
+| matrix | 06 | T06c | a list of row lists |
+| function | 13 | T07a | `E9 \| body \| E5 \| params \| 00 \| ?? \| 40 \| DC` |
+| program | 12 | T07b | as a function, with commands (`E4`) and statement ends (`E7`) |
+| text | 0B | T08a | `cursor (BE16) \| lines \| 00 \| E0` |
+| picture | 10 | T08b | `rows (BE16) \| columns (BE16) \| bitmap \| DF` |
+| data | 0A | T08c | column lists plus undecoded bytes, `DD` |
+| GDB | 0D | T08d | undecoded, ends `D9 DE` |
 
 ## 8. Open questions
 
-- What does the ACK length field `0x100C` mean in the answer to RDY (5.2)?
+- **What does the ACK length field mean in the answer to RDY (5.2)?**
+  - It is usually `0x100C`, but sometimes `0x110C`, which differs in one bit.
+  - `0x110C` was seen: after the start-up check at 135.8 s; for the two RDYs
+    just after T09a's VAR-LINK transfer; and for T11's first RDY, all in
+    `captures/2026-10-09_192238.log`. Also for the first RDY of T14 and of
+    T15, and for the second RDY of T20's false start, in
+    `captures/2026-10-09_201528.log`.
+  - Perhaps it reflects the answering calculator's state, or tells which
+    calculator answered.
+- Which calculator makes the probe pulses, and what for (5.11)? They are the
+  same as the pulse groups first seen in the T01b trace.
+- In T20, which side sends the second EOT, and which sends CONT?
+- What did A show after B answered "No" (T13b), and after T13c?
+- What do the unknown bytes in functions (`00 ?? 40` before `DC`), data
+  variables and GDBs mean?
 - Why did A opening VAR-LINK send nothing, when B opening it sent a RDY? Is
   it the first time VAR-LINK opens, or does it depend on the other calculator?
-- **Unexplained pulse groups (T01b trace, before the mark, while B was in
-  VAR-LINK):**
-  - One calculator pulls tip and gets an acknowledgement on ring within
-    0.9 µs, but then holds tip for 201 µs before letting go, instead of
-    about 1 µs. The ring is released 0.4 µs later.
-  - The pulses come in groups of three, about 16.5 ms apart, and the groups
-    are seconds apart.
-  - The sniffer decodes each pulse as a 0 bit, and so would report a partial
-    byte.
-
-  The pattern looks like a presence or activity probe rather than data. To
-  pin down when it happens, mark each step.

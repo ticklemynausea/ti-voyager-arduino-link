@@ -15,8 +15,14 @@
  * The calculators can be very quick: the idle moment between two bits can
  * last only a microsecond or so, and the next bit may even start on the line
  * that was just released. So bits are not counted on idle. Each bit has
- * exactly one BOTH phase, so a bit is counted on entering BOTH, and its value
- * is the line that was low on its own just before that.
+ * exactly one BOTH phase, so a bit is counted when BOTH ends, and its value
+ * is the line that was low on its own just before BOTH began.
+ *
+ * Probes: in a data bit BOTH lasts about 1 us. The calculators also make
+ * single pulses where BOTH lasts about 200 us (one side pulls tip, the other
+ * acknowledges, the first lets go much later), after transfers and while a
+ * transfer is held up. They are not data: a BOTH longer than probeTicks is
+ * reported as a PROBE and not counted as a bit.
  *
  * Time is in arbitrary "ticks" (microseconds in the PC test, CPU cycles on the
  * ESP32); set the two timeouts in the same unit.
@@ -41,6 +47,8 @@ struct LinkEvent {
     BYTE,      // a complete byte
     PARTIAL,   // the byte stopped after `bits` bits (value holds the bits so far)
     NOACK,     // a line was pulled and let go without the other side acknowledging
+    PROBE,     // a pulse with a long BOTH phase (see the header comment); not a bit.
+               // value: the line pulled first (0 tip, 1 ring); dur: the BOTH phase
     STUCK,     // notice: a bit has been in progress for longer than stuckTicks.
                // Only a report: the bit still completes or fails later, since a
                // busy receiver can legitimately keep the sender waiting.
@@ -54,9 +62,10 @@ class BitDecoder {
 public:
   uint32_t midByteTicks = 50000;    // quiet time inside a byte that abandons it
   uint32_t stuckTicks = 1000000;    // a bit in progress this long is reported (once)
+  uint32_t probeTicks = 50;         // BOTH at least this long = a probe, not a bit
 
   // ---- counters (read from another core for "stats"; approximate is fine) ----
-  uint32_t bytes = 0, partials = 0, noacks = 0, ambiguousBits = 0, stucks = 0;
+  uint32_t bytes = 0, partials = 0, noacks = 0, ambiguousBits = 0, stucks = 0, probes = 0;
   uint32_t minBitTicks = 0xFFFFFFFF, maxBitTicks = 0;   // between bits inside a byte
 
   // Call once before feeding, with the lines as they are now. feed() only sees
@@ -75,6 +84,10 @@ public:
 
     switch (s) {
     case 3:   // idle
+      if (_phase == BOTH) {      // both let go together (END too short to see)
+        _phase = IDLE;
+        return endBoth(t, ev);
+      }
       if (_phase == START) {     // pulled and let go without an acknowledgement
         noacks++;
         uint8_t b = _bits;
@@ -91,6 +104,8 @@ public:
         _phase = START;
       } else if (_phase == BOTH) {
         _phase = END;
+        _single = s;
+        return endBoth(t, ev);
       } else if (s != _single) {
         if (_phase == END) {
           // the other line, straight after END: the idle moment was too short to
@@ -129,11 +144,10 @@ public:
         return false;   // already BOTH
       }
       _phase = BOTH;
-      if (amb) {
-        _amb++;
-        ambiguousBits++;
-      }
-      return completeBit(v, t, ev);
+      _bothStart = t;
+      _pendingVal = v;
+      _pendingAmb = amb;
+      return false;   // counted when BOTH ends (endBoth)
     }
     }
   }
@@ -161,7 +175,23 @@ private:
   uint8_t _single = 3;   // which line was low on its own most recently (1 tip, 2 ring)
   uint8_t _bits = 0, _value = 0, _amb = 0;
   bool _stuckReported = false;
-  uint64_t _bitStart = 0, _byteStart = 0, _lastChange = 0, _lastBitAt = 0;
+  uint64_t _bitStart = 0, _byteStart = 0, _lastChange = 0, _lastBitAt = 0, _bothStart = 0;
+  uint8_t _pendingVal = 0;
+  bool _pendingAmb = false;
+
+  // BOTH has just ended: count the bit, or report a probe.
+  BITDECODER_FN bool endBoth(uint64_t t, LinkEvent &ev) {
+    uint64_t held = t - _bothStart;
+    if (held >= probeTicks) {
+      probes++;
+      return make(ev, LinkEvent::PROBE, _pendingVal, _bits, 0, _bothStart, held);
+    }
+    if (_pendingAmb) {
+      _amb++;
+      ambiguousBits++;
+    }
+    return completeBit(_pendingVal, t, ev);
+  }
 
   // tip low alone (1) means a 0 bit; ring low alone (2) means a 1 bit
   BITDECODER_FN static uint8_t _bitVal(uint8_t single) { return single == 2 ? 1 : 0; }
