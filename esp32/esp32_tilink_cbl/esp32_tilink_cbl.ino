@@ -431,7 +431,7 @@ uint8_t pushStartCmd = CMD_VAR;
 
 bool pushVar(uint8_t id, uint8_t type, const String &name, const uint8_t prefix[4],
              const uint8_t *content, uint16_t contentLen, uint8_t startCmd,
-             uint32_t firstReplyUs) {
+             uint32_t firstReplyUs, bool sendEot = true) {
   static uint8_t data[MAX_DATA];
   // An empty name is allowed: it is one of the Get-answer variants being tested.
   if (contentLen + 4 > MAX_DATA || name.length() > 8) {
@@ -464,8 +464,10 @@ bool pushVar(uint8_t id, uint8_t type, const String &name, const uint8_t prefix[
   if (!sendPacket(CMD_ACK)) return false;
   if (!sendPacket(CMD_DATA, data, contentLen + 4)) return false;
   if (!expect(CMD_ACK)) return false;
-  if (!sendPacket(CMD_EOT)) return false;
-  if (!expect(CMD_ACK)) return false;
+  if (sendEot) {
+    if (!sendPacket(CMD_EOT)) return false;
+    if (!expect(CMD_ACK)) return false;
+  }
   Serial.println("== sent to calculator ==\n");
   return true;
 }
@@ -506,19 +508,20 @@ String tiNumber(double v) {
 //
 // The calculator never ACKs our answer's VAR header, so the header fields
 // are settable from the Serial Monitor (getid / gettype / getname / getack)
-// to try variants without reflashing. Defaults = the first attempt:
-// id 0x19, type 0x04 (list), name FF, ACK the REQ first.
+// to try variants without reflashing. Findings so far: id 0x19 and no name
+// get the header and data accepted (with name FF the header is never ACKed).
 uint8_t getId = 0x19;
 uint8_t getType = 0x04;
-String  getName = String((char)0xFF);
+String  getName = "";      // no name: with FF the calculator never ACKs the header
 bool    getAck = true;
+bool    getEot = false;    // no EOT: the calculator doesn't expect one after a Get answer
 
 void printGetCfg() {
-  Serial.printf("Get answer: id 0x%02X  type 0x%02X  name %s  ack-first %s\n", getId,
+  Serial.printf("Get answer: id 0x%02X  type 0x%02X  name %s  ack-first %s  eot %s\n", getId,
                 getType,
                 getName.length() ? (String("0x") + String((uint8_t)getName[0], HEX)).c_str()
                                  : "none",
-                getAck ? "on" : "off");
+                getAck ? "on" : "off", getEot ? "on" : "off");
 }
 
 // List in the CBL format from the Send captures:
@@ -535,7 +538,8 @@ bool sendCblList(const double *v, uint16_t count) {
   }
   content[n++] = 0x00;
   const uint8_t prefix[4] = {(uint8_t)count, (uint8_t)(count >> 8), 0, 0};
-  return pushVar(getId, getType, getName, prefix, content, n, CMD_VAR, REPLY_TIMEOUT_US);
+  return pushVar(getId, getType, getName, prefix, content, n, CMD_VAR, REPLY_TIMEOUT_US,
+                 getEot);
 }
 
 // ---------- answering Get ----------
@@ -543,10 +547,13 @@ bool sendCblList(const double *v, uint16_t count) {
 // "Get x" on the calculator sends a REQ (0xA2) with id 0x89, data
 // 00 00 00 00 1E 00 (captured), and waits. The answer is set beforehand
 // with "reply <numbers>" and is sent for every Get until changed.
-// Exchange, per the TI-89/V200 link guide's "silent transfers" (answering a
-// REQ): ESP -> ACK, VAR -> calc ACK, CTS -> ESP ACK, DATA -> calc ACK ->
-// ESP EOT -> calc ACK. With the defaults the calculator never ACKs the VAR
-// and then reports "Protected memory violation", so the header is wrong.
+// Working exchange (confirmed on a Voyage 200, Get x -> x = {7.}):
+//   calc -> REQ
+//   ESP  -> ACK, VAR (id 0x19, type 04, no name)   calc -> ACK, CTS
+//   ESP  -> ACK, DATA (count + " 7")               calc -> ACK
+// No EOT: unlike the link guide's sequence for answering a REQ, sending one
+// leaves the calculator with "Error: link transmission". With name FF the
+// VAR is never ACKed and the calculator reports "Protected memory violation".
 
 double   replyVals[MAX_LIST];
 uint16_t replyCount = 0;
@@ -576,8 +583,9 @@ const char *HELP =
   "  reply <n1> <n2> ...     answer for Get x on the calculator; 'reply' alone clears\n"
   "  getid <hex>             Get answer: machine id (default 19)\n"
   "  gettype <hex>           Get answer: variable type (default 04)\n"
-  "  getname <hex> | none    Get answer: one-byte name, or no name (default ff)\n"
+  "  getname <hex> | none    Get answer: one-byte name, or no name (default none)\n"
   "  getack on | off         Get answer: ACK the request first (default on)\n"
+  "  geteot on | off         Get answer: send EOT after the data (default off)\n"
   "  getcfg                  show the Get answer settings\n"
   "  start var | start rts   first packet used by push (default var)\n"
   "  id auto | id <hex>      reply machine id for transfers the calc starts";
@@ -624,6 +632,9 @@ void handleCommand(String cmd) {
     printGetCfg();
   } else if (cmd == "getack on" || cmd == "getack off") {
     getAck = (cmd == "getack on");
+    printGetCfg();
+  } else if (cmd == "geteot on" || cmd == "geteot off") {
+    getEot = (cmd == "geteot on");
     printGetCfg();
   } else if (cmd == "getcfg") {
     printGetCfg();

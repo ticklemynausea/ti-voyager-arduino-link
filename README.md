@@ -109,12 +109,24 @@ Observed on a Voyage 200 with the sketches in this repo:
   the same string format as `SendCalc`. The calculator's OS only handles incoming
   transfers while idle, so its first ACK can take a few seconds. An existing
   variable of the same name is overwritten silently, without a prompt.
-- **ESP32 -> calculator, `Get` (not working yet).** `Get x` sends a REQ (`0xA2`,
-  id `0x89`, data `00 00 00 00 1E 00`) and waits. Answering with ACK and then a
-  CBL-style list (the sequence the TI-89/V200 link guide gives for answering a
-  REQ) gets no ACK for the VAR header; the calculator re-sends the REQ and then
-  reports "Protected memory violation". The CBL sketch's `getid`, `gettype`,
-  `getname` and `getack` commands change the answer's header to test variants.
+- **ESP32 -> calculator, `Get` (works).** `Get x` sends a REQ (`0xA2`, id `0x89`,
+  data `00 00 00 00 <type> 00`) and waits. The working answer:
+  ```
+  calc -> REQ
+  ESP  -> ACK, VAR (id 0x19, type 04, no name)   calc -> ACK, CTS
+  ESP  -> ACK, DATA (count + " 7" + 00)          calc -> ACK
+  ```
+  The VAR header is `size (4 LE) | 04 | 00 | 00` and the DATA uses the same list
+  format as `Send`. `x` then holds `{7.}`: a list, stored as decimal numbers.
+  Differences from the link guide's sequence for answering a REQ, found by trial:
+  - **no name** in the header; with name `FF` the calculator never ACKs it and
+    then reports "Protected memory violation";
+  - **no EOT** at the end; sending one leaves "Error: link transmission";
+  - machine ID `0x19`; with `0x08` the calculator never ACKs the header.
+
+  The REQ's type byte was `1E` the first time and `04` once `x` held a list, so
+  it seems to be the type of the existing variable. The type in the answer's
+  header (`04` or `1E`) made no difference.
 
 ### Character set
 
