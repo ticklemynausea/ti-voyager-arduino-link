@@ -138,24 +138,35 @@ RDY   89 68 00 00                ->
 ```
 
 Observed:
-- **In T01 there were three RDY/ACK pairs**, 3.4 s and 10.8 s apart. The VAR
-  followed 24 ms after the third. Before T01, B opened VAR-LINK and then chose
-  Receive; then A sent.
-- **In T01b, B choosing Receive** was followed, 2.4 s later, by one RDY/ACK
-  pair. A was idle at Home.
-- **On A, opening VAR-LINK, selecting `a` and opening the `F3` menu** put
-  nothing on the wire.
-- **On A, choosing Send** gave a RDY/ACK pair, then the VAR 24 ms after the
-  ACK.
+- **T01:** three RDY/ACK pairs, 3.4 s and 10.8 s apart, with the VAR 24 ms
+  after the third. Beforehand, B opened VAR-LINK and chose Receive, then A
+  sent.
+- **T01b rerun, a mark before every step** (`captures/2026-10-09_182735.log`):
+
+  | Step | On the wire |
+  |---|---|
+  | B opens VAR-LINK | one RDY/ACK pair, 2.9 s after the mark |
+  | B chooses Receive | nothing |
+  | A opens VAR-LINK, selects `a`, opens `F3` | nothing |
+  | A chooses Send | RDY/ACK, then VAR 24 ms after the ACK |
+
+  The sniffer missed the first two bits of the first pair: it shows up as
+  `22 1A 00 40 A2 15 03` plus 6 bits. That is exactly `89 68 00 00 89 56 0C 10`
+  shifted by two bits. The cause was a sniffer bug, fixed in the next sketch
+  version (see its header comment).
+- **The first T01b run** saw one RDY/ACK pair 2.4 s after `mark T01b B
+  Receive`, while B was opening VAR-LINK and choosing Receive. That fits the
+  rerun: the RDY came from opening VAR-LINK.
 - **Each RDY was answered within 0.5–0.8 ms**, even by a calculator idle at
   Home.
 
 Inferred:
-- **RDY is an "is anyone there?" check.** A calculator sends it when it
-  starts a link operation: B on entering Receive, A on Send.
-- **The other calculator's OS answers it**, even from the Home screen.
-- That accounts for two of T01's three pairs. The third probably came from
-  B opening VAR-LINK, which T01b's `mark T01b B VAR-LINK` step will check.
+- **RDY is an "is anyone there?" check.** A calculator sends it when VAR-LINK
+  opens and again when it sends. The other calculator's OS answers it, even
+  from the Home screen.
+- **Choosing Receive sends nothing**: the receiver just waits.
+- **T01's third RDY is not yet explained.** A opening VAR-LINK sent nothing in
+  the rerun. Maybe B opened VAR-LINK twice in T01.
 
 ### 5.3 Several variables, T11; a folder, T12
 ### 5.4 Variable already exists: overwrite / skip / rename, T13
@@ -205,7 +216,8 @@ sizes big-endian inside the data.
 ## 8. Open questions
 
 - What does the ACK length field `0x100C` mean in the answer to RDY (5.2)?
-- Does opening VAR-LINK send a RDY too (T01b, first step)?
+- Why did A opening VAR-LINK send nothing, when B opening it sent a RDY? Is
+  it the first time VAR-LINK opens, or does it depend on the other calculator?
 - **Unexplained pulse groups (T01b trace, before the mark, while B was in
   VAR-LINK):**
   - One calculator pulls tip and gets an acknowledgement on ring within

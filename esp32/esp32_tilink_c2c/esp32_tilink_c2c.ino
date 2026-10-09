@@ -19,12 +19,17 @@
  *                  handshake phases can be about 1 us long and a timer
  *                  interrupt would hide them. They are let through briefly
  *                  every 100 ms, preferably while the link is quiet, to keep
- *                  the interrupt watchdog happy.
+ *                  the interrupt watchdog happy. The sampler and decoder run
+ *                  from internal RAM (IRAM): code fetched through the flash
+ *                  cache can stall for microseconds on a miss, which lost the
+ *                  first bits of a packet after a quiet spell.
  *   core 0 (task): drains the ring buffer, assembles TI packets, checks their
  *                  checksums and prints them; also reads Serial commands.
  *
  * Serial Monitor at 115200 baud; type "help" for commands.
  */
+#include "esp_attr.h"
+#define BITDECODER_FN IRAM_ATTR
 #include "BitDecoder.h"
 #include <atomic>
 #include "esp_timer.h"
@@ -67,7 +72,7 @@ LinkEvent *ring;
 std::atomic<uint32_t> ringHead{0}, ringTail{0};
 volatile uint32_t overflows = 0;
 
-static inline void push(const LinkEvent &ev) {
+static inline IRAM_ATTR void push(const LinkEvent &ev) {
   uint32_t h = ringHead.load(std::memory_order_relaxed);
   uint32_t next = (h + 1) % RING_SIZE;
   if (next == ringTail.load(std::memory_order_acquire)) {
@@ -483,6 +488,8 @@ void setup() {
   xTaskCreatePinnedToCore(printerTask, "printer", 8192, nullptr, 1, nullptr, 0);
 }
 
+static void sampleForever(uint32_t tipBit, uint32_t ringBit);
+
 // Runs on core 1 and never returns.
 void loop() {
   disableCore1WDT();
@@ -503,10 +510,16 @@ void loop() {
     for (;;) vTaskDelay(1000);
   }
   const uint32_t tipBit = 1UL << offset, ringBit = 1UL << (offset + 1);
-  const uint32_t mask = tipBit | ringBit;
 
   dec.midByteTicks = 50000 * cyclesPerUs;      // 50 ms
   dec.stuckTicks = 1000000 * cyclesPerUs;      // 1 s
+
+  sampleForever(tipBit, ringBit);
+}
+
+// The sampling loop. In IRAM, like the decoder it calls (see the header comment).
+static IRAM_ATTR __attribute__((noinline)) void sampleForever(const uint32_t tipBit, const uint32_t ringBit) {
+  const uint32_t mask = tipBit | ringBit;
   const uint32_t windowEvery = 100000 * cyclesPerUs;   // 100 ms
   const uint32_t windowForce = 200000 * cyclesPerUs;   // 200 ms (watchdog at 300)
   const uint32_t quietBefore = 200 * cyclesPerUs;      // link idle this long = safe moment

@@ -28,6 +28,12 @@
 #pragma once
 #include <stdint.h>
 
+// Placement attribute for the decoding functions. The ESP32 sketch sets it to
+// IRAM_ATTR so they run from internal RAM, never stalling on a flash-cache miss.
+#ifndef BITDECODER_FN
+#define BITDECODER_FN
+#endif
+
 struct LinkEvent {
   uint64_t t;       // BYTE / PARTIAL: start of the byte; NOACK / STUCK: start of the bit
   uint32_t dur;     // BYTE: the whole byte; PARTIAL: until the last bit; NOACK / STUCK: the bit so far
@@ -54,7 +60,7 @@ public:
   uint32_t minBitTicks = 0xFFFFFFFF, maxBitTicks = 0;   // between bits inside a byte
 
   // tip / ring: true = line high. Call only when at least one of them changed.
-  bool feed(bool tip, bool ring, uint64_t t, LinkEvent &ev) {
+  BITDECODER_FN bool feed(bool tip, bool ring, uint64_t t, LinkEvent &ev) {
     uint8_t s = (tip ? 2 : 0) | (ring ? 1 : 0);   // 3 idle, 1 tip low, 2 ring low, 0 both low
     _lastChange = t;
 
@@ -128,7 +134,7 @@ public:
     }
   }
 
-  bool tick(uint64_t t, LinkEvent &ev) {
+  BITDECODER_FN bool tick(uint64_t t, LinkEvent &ev) {
     uint64_t quiet = t - _lastChange;
     bool inBit = _phase == START || _phase == BOTH;
     if (inBit && !_stuckReported && quiet >= stuckTicks) {
@@ -154,21 +160,21 @@ private:
   uint64_t _bitStart = 0, _byteStart = 0, _lastChange = 0, _lastBitAt = 0;
 
   // tip low alone (1) means a 0 bit; ring low alone (2) means a 1 bit
-  static uint8_t _bitVal(uint8_t single) { return single == 2 ? 1 : 0; }
+  BITDECODER_FN static uint8_t _bitVal(uint8_t single) { return single == 2 ? 1 : 0; }
 
-  void beginBit(uint64_t t) {
+  BITDECODER_FN void beginBit(uint64_t t) {
     _bitStart = t;
     _stuckReported = false;
     if (_bits == 0) _byteStart = t;
   }
 
-  void clearByte() {
+  BITDECODER_FN void clearByte() {
     _bits = 0;
     _value = 0;
     _amb = 0;
   }
 
-  bool completeBit(uint8_t v, uint64_t t, LinkEvent &ev) {
+  BITDECODER_FN bool completeBit(uint8_t v, uint64_t t, LinkEvent &ev) {
     if (_bits > 0) {
       uint64_t d = t - _lastBitAt;
       if (d < minBitTicks) minBitTicks = (uint32_t)d;
@@ -183,7 +189,7 @@ private:
     return make(ev, LinkEvent::BYTE, value, 8, a, _byteStart, (uint32_t)(t - _byteStart));
   }
 
-  static bool make(LinkEvent &ev, LinkEvent::Type type, uint8_t value, uint8_t bits,
+  BITDECODER_FN static bool make(LinkEvent &ev, LinkEvent::Type type, uint8_t value, uint8_t bits,
                    uint8_t amb, uint64_t t, uint64_t dur) {
     ev.type = type;
     ev.value = value;

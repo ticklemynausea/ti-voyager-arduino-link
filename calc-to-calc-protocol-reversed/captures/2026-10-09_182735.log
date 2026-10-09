@@ -1,0 +1,48 @@
+Monitor port settings:
+  baudrate=115200
+  bits=8
+  dtr=on
+  parity=none
+  rts=on
+  stop_bits=1
+
+Connecting to /dev/cu.usbmodem14301. Press CTRL-C to exit.
+
+esp32_tilink_c2c: passive TI link sniffer (tip G1, ring G5). Type help.
+free heap 151028 bytes, CPU 240 MHz
+tip high  ring high
+mark T01b B VAR-LINK
+
+==== T01b B VAR-LINK ====  at    103.881499
+! at    106.818226 a line was pulled low for 2520 ns and let go without an acknowledgement (0 bits into the byte)
+[   106.818239]  raw: 7 bytes (before a partial byte)
+    0000: 22 1A 00 40 A2 15 03                             "..@...
+! partial byte at    106.820163: only 6 bits (so far 04)
+mark T01b B Receive
+
+==== T01b B Receive ====  at    117.563423
+mark T01b A VAR-LINK
+
+==== T01b A VAR-LINK ====  at    133.266423
+mark T01b A VAR-LINK                    mark T01b A select a
+
+==== T01b A select a ====  at    149.050434
+mark T01b A F3
+
+==== T01b A F3 ====  at    157.902404
+mark T01b A Send
+
+==== T01b A Send ====  at    167.831416
+[   170.690879 +    63.870728]  89 RDY  len 0      0.388 ms
+[   170.691793 +     0.000526]  89 ACK  len 4108  (header only)  0.399 ms
+[   170.716372 +     0.024180]  88 VAR  len 8     ck OK  1.463 ms
+    size 5  type 00 expression  name "a"  rest: 00
+    0000: 05 00 00 00 00 01 61 00                          ......a.
+[   170.719116 +     0.001281]  88 ACK  len 0      0.400 ms
+[   170.719804 +     0.000288]  88 CTS  len 0      0.400 ms
+[   170.720740 +     0.000536]  88 ACK  len 0      0.387 ms
+[   170.721479 +     0.000352]  88 DATA len 9     ck OK  1.483 ms
+    0000: 00 00 00 00 00 03 05 01 1F                       .........
+[   170.724144 +     0.001182]  88 ACK  len 0      0.399 ms
+[   170.733900 +     0.009357]  88 EOT  len 0      0.389 ms
+[   170.760982 +     0.026693]  88 ACK  len 0      0.398 ms
