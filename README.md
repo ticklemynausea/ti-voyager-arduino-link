@@ -47,6 +47,8 @@ Things learned the hard way:
 |---|---|
 | `esp32/esp32_tilink_cbl/` | **The main experiment.** Receives TI-BASIC `Send {...}` (as a CBL) and `SendCalc` (as another calculator), decoding lists, strings and (shallowly) functions; answers `Get x`; and pushes string variables to the calculator. Every packet is logged. Type `help` in the Serial Monitor for its commands. |
 | `esp32/esp32_tilink_linetest/` | Prints raw tip/ring states without driving the lines; for checking the wiring. |
+| `esp32/esp32_tilink_c2c/` | Passive sniffer that sits between two Voyage 200s and logs their packets, without driving the lines. |
+| [`calc-to-calc-protocol-reversed/`](calc-to-calc-protocol-reversed/) | **Second experiment:** reversing the calculator-to-calculator protocol with that sniffer: wiring, test plan, captures and the protocol write-up. |
 
 `TiLink.h` / `TiLink.cpp` in the CBL sketch's folder are the link-layer library:
 the bit-level handshake plus error diagnostics.
