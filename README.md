@@ -1,25 +1,127 @@
 # ti-voyager-arduino-link
 
-Experiments in talking to a **TI Voyage 200** graphing calculator through its 2.5 mm
-link port, from an ESP32 programmed with the Arduino framework.
+Experiments in talking to a **TI Voyage 200** graphing calculator through its
+2.5 mm link port, using an ESP32 (M5Stack Stamp S3) programmed with the Arduino
+framework.
 
-The long-term idea is to give the Voyage 200 some form of internet access, with an
-ESP32 doing the networking and the calculator acting as a terminal. This repo is
-the exploratory groundwork, not a finished product: expect rough edges, and treat
-the protocol notes below as findings from one calculator rather than a specification.
+The long-term idea is to give the Voyage 200 some form of internet access, with
+the ESP32 doing the networking and the calculator acting as a terminal. This
+repo is the groundwork for that, not a finished product. It holds two
+experiments:
+
+1. **ESP32 as a link partner.** The ESP32 takes part in the link, posing as a
+   CBL data logger or as another calculator. TI-BASIC's `Send`, `Get` and
+   `SendCalc` can then talk to it.
+2. **Calculator-to-calculator protocol.** The ESP32 listens passively between
+   two Voyage 200s. A series of tests documents what they say to each other.
+
+Treat the protocol notes as findings from these calculators, not as a
+specification.
+
+## Repository layout
+
+```
+esp32/                               Arduino sketches (one folder per sketch)
+  esp32_tilink_cbl/                  experiment 1: the ESP32 as a link partner
+    esp32_tilink_cbl.ino               packet layer, decoders, Serial commands
+    TiLink.h, TiLink.cpp               bit-level link driver with error diagnostics
+  esp32_tilink_c2c/                  experiment 2: passive sniffer between two calculators
+    esp32_tilink_c2c.ino               sampler, packet printer, line history, Serial commands
+    BitDecoder.h                       passive bit decoder (plain C++, testable on a PC)
+  esp32_tilink_linetest/             wiring check: prints tip/ring levels without driving them
+calc-to-calc-protocol-reversed/      experiment 2: documentation and data
+  README.md                            sniffer wiring, flashing, running a capture session
+  TESTS.md                             the test sequence (T00-T20)
+  PROTOCOL.md                          the reversed calculator-to-calculator protocol
+  captures/                            raw logs of every session, named by date and time
+README.md                            this file; also the experiment 1 protocol notes
+```
+
+## Experiment 1: the ESP32 as a link partner
+
+`esp32/esp32_tilink_cbl/` makes the ESP32 answer the calculator's link
+protocol. Every packet is logged to the Serial Monitor (115200 baud). Type
+`help` there for its commands.
+
+- **Receives** `Send {...}` (posing as a CBL) and `SendCalc` (posing as
+  another calculator). It decodes lists and strings, and shows function
+  bodies as a list of tokens.
+- **Answers `Get x`** with a list.
+- **Pushes** string variables to the calculator unprompted (`push <name>
+  <text>`). The calculator takes them silently while idle at the Home screen.
+
+`TiLink.h` / `TiLink.cpp` implement the bit-level handshake. When a byte
+fails, they report the stage, bit and line levels. What this experiment
+found is under [Protocol findings](#protocol-findings-esp32--calculator)
+below.
+
+## Experiment 2: the calculator-to-calculator protocol
+
+`esp32/esp32_tilink_c2c/` sits on the link between two Voyage 200s and only
+listens. Both pins are inputs, so the calculators talk exactly as they would
+over TI's cable.
+
+- **Sampling.** One core samples the lines about every 50 ns, from IRAM with
+  interrupts off, and decodes the handshake. The other core assembles
+  packets, checks their checksums and prints them with timestamps.
+- **Line history.** It keeps a rolling history of line changes, printed
+  automatically around anything that looks wrong.
+- **Probe pulses.** It recognises the calculators' 200 µs probe pulses, so
+  they aren't counted as data.
+
+Everything else for this experiment is in
+[`calc-to-calc-protocol-reversed/`](calc-to-calc-protocol-reversed/):
+- the sniffer's wiring (a second pigtail on the same breadboard rows);
+- how to record a session;
+- the test sequence;
+- every capture;
+- **[PROTOCOL.md](calc-to-calc-protocol-reversed/PROTOCOL.md)**, the write-up.
+
+All tests T00–T20 have been run. They cover:
+- the packet exchange for single and multiple variables;
+- the RDY check that VAR-LINK uses;
+- the data encoding of numbers, expressions, strings, lists, matrices,
+  functions, programs, text and pictures;
+- folders, overwrite prompts, aborts, `SendChat`, and a Flash app transfer.
+
+The open questions are listed at the end of PROTOCOL.md.
+
+## Wiring check
+
+`esp32/esp32_tilink_linetest/` prints the tip and ring levels whenever they
+change, plus a periodic heartbeat. It never drives the lines. Use it before
+either experiment to check the wiring and the ground connection.
+
+## Removed experiments
+
+Earlier experiments were removed once the CBL sketch covered their ground.
+They are in the git history, last present in commit `d4abde0`:
+
+- `esp32/esp32_tilink_sniffer/`: an early receive-only sniffer. It took part
+  in the handshake, unlike the passive c2c sniffer.
+- `esp32/esp32_tilink_pingpong/` with `calculator/pingpong.c`: a raw-byte link
+  using a custom frame format instead of TI's packets.
+  - It needs a C program on the calculator (GCC4TI).
+  - It was never tested end to end.
+  - A C program could transfer faster than BASIC's `Send`/`Get`, so this
+    route may be worth reviving.
+- `arduino/ti_link_arduino/` with `calculator/tilink.c`: the first experiment,
+  for an Arduino Uno/Nano.
 
 ## Hardware
 
-- TI Voyage 200 (the TI-89 / TI-92 Plus family should behave the same way)
-- M5Stack Stamp S3 (ESP32-S3); other ESP32 boards should work with different pins
-- A 2.5 mm stereo (TRS) pigtail cable. The plug's moulded collar may need shaving
-  down to seat fully in the Voyage 200's recessed port.
+- TI Voyage 200 (the TI-89 / TI-92 Plus family should behave the same way);
+  two of them for experiment 2
+- M5Stack Stamp S3 (ESP32-S3). Other ESP32 boards should work with different
+  pins, except that the c2c sniffer uses ESP32-S3 features.
+- 2.5 mm stereo (TRS) pigtail cables: one per calculator. The plug's moulded
+  collar may need shaving down to seat fully in the Voyage 200's recessed port.
 - Two 220 ohm resistors
 
 ## Wiring (Stamp S3)
 
-The Voyage 200's link lines are open-collector with pull-ups, and on this unit they
-idle at **3.3 V**, so the Stamp S3 is wired directly with no level shifter.
+The Voyage 200's link lines are open-collector with pull-ups, and on this unit
+they idle at **3.3 V**, so the Stamp S3 is wired directly with no level shifter.
 
 | Pigtail wire | Plug part | Stamp S3 |
 |---|---|---|
@@ -27,48 +129,28 @@ idle at **3.3 V**, so the Stamp S3 is wired directly with no level shifter.
 | White | Ring | 220 ohm -> G5 |
 | Black | Sleeve | GND |
 
-Measure your own calculator first (tip and ring against sleeve, calculator on, at
-the Home screen). If the lines idle at about 5 V, use a bidirectional level shifter.
+For experiment 2, the second calculator's pigtail joins the same three rows;
+see [its README](calc-to-calc-protocol-reversed/README.md#wiring).
+
+Measure your own calculator first (tip and ring against sleeve, calculator on,
+at the Home screen). If the lines idle at about 5 V, use a bidirectional level
+shifter.
 
 Things learned the hard way:
 
-- **A solid ground connection is essential.** With a loose ground the lines pick up
-  hum from the laptop's power adapter and toggle every 10 ms.
-- **Power order matters.** Plug in the ESP32's USB before connecting the calculator,
-  and unplug the calculator first. Otherwise the calculator's pull-ups can
-  half-power the unpowered ESP32 through its pin protection diodes, and it then
-  fails to appear on USB.
-- Stranded pigtail wires make poor breadboard contacts; tin them or solder them to
-  header pins.
-
-## Contents
-
-| Path | What it is |
-|---|---|
-| `esp32/esp32_tilink_cbl/` | **The main experiment.** Receives TI-BASIC `Send {...}` (as a CBL) and `SendCalc` (as another calculator), decoding lists, strings and (shallowly) functions; answers `Get x`; and pushes string variables to the calculator. Every packet is logged. Type `help` in the Serial Monitor for its commands. |
-| `esp32/esp32_tilink_linetest/` | Prints raw tip/ring states without driving the lines; for checking the wiring. |
-| `esp32/esp32_tilink_c2c/` | Passive sniffer that sits between two Voyage 200s and logs their packets, without driving the lines. |
-| [`calc-to-calc-protocol-reversed/`](calc-to-calc-protocol-reversed/) | **Second experiment:** reversing the calculator-to-calculator protocol with that sniffer: wiring, test plan, captures and the protocol write-up. |
-
-`TiLink.h` / `TiLink.cpp` in the CBL sketch's folder are the link-layer library:
-the bit-level handshake plus error diagnostics.
-
-### Removed experiments
-
-Earlier experiments were removed once the CBL sketch covered their ground. They
-are in the git history, last present in commit `d4abde0`:
-
-- `esp32/esp32_tilink_sniffer/`: receive-only packet sniffer.
-- `esp32/esp32_tilink_pingpong/` with `calculator/pingpong.c`: a raw-byte link using
-  a custom frame format instead of TI's packets, which needs a C program on the
-  calculator (GCC4TI). Never tested end to end. A C program could transfer faster
-  than BASIC's `Send`/`Get`, so this route may be worth reviving.
-- `arduino/ti_link_arduino/` with `calculator/tilink.c`: the first experiment, for
-  an Arduino Uno/Nano.
+- **A solid ground connection is essential.** With a loose ground the lines
+  pick up hum from the laptop's power adapter and toggle every 10 ms.
+- **Power order matters.** Plug in the ESP32's USB before connecting the
+  calculator, and unplug the calculator first. Otherwise the calculator's
+  pull-ups can half-power the unpowered ESP32 through its pin protection
+  diodes, and it then fails to appear on USB.
+- Stranded pigtail wires make poor breadboard contacts; tin them or solder them
+  to header pins.
 
 ## Building and flashing
 
-With `arduino-cli` and the ESP32 board package installed:
+With `arduino-cli` and the ESP32 board package installed, from the repo root
+(replace the sketch folder with the one you want):
 
 ```sh
 arduino-cli compile --upload -p /dev/cu.usbmodem14301 \
@@ -76,12 +158,13 @@ arduino-cli compile --upload -p /dev/cu.usbmodem14301 \
 arduino-cli monitor -p /dev/cu.usbmodem14301 -c baudrate=115200
 ```
 
-Replace the port with your own (`arduino-cli board list`). The sketches also open
-in the Arduino IDE.
+Replace the port with your own (`arduino-cli board list`). The sketches also
+open in the Arduino IDE.
 
-## Protocol findings
+## Protocol findings (ESP32 ↔ calculator)
 
-Observed on a Voyage 200 with the sketches in this repo:
+From experiment 1, observed on a Voyage 200. For what two calculators say to
+each other, see [PROTOCOL.md](calc-to-calc-protocol-reversed/PROTOCOL.md).
 
 - **Bit handshake.** Both lines idle high. A 0 bit is signalled by the sender
   pulling tip low, a 1 bit by pulling ring low; the receiver acknowledges on the
