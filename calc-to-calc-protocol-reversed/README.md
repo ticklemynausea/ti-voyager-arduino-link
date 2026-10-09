@@ -107,7 +107,8 @@ both share the same lines. That is worked out in PROTOCOL.md from the order of
 the commands.
 
 Commands: `mark <text>`, `raw on|off` (also log every byte and its timing),
-`gap <ms>`, `stats`, `zero`, `lines`, `help`.
+`gap <ms>`, `stats`, `zero`, `lines`, `trace [n]` (record the next n raw line
+changes with nanosecond timing, then print them), `help`.
 
 ### Sanity checks
 

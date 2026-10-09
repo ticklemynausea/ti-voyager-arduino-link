@@ -11,9 +11,15 @@
  * to GND.
  *
  * Structure:
- *   core 1 (loop): polls the GPIO input register in a tight loop and decodes
- *                  the bit handshake (BitDecoder.h) into bytes, which go into
- *                  a ring buffer. It never prints, so it never misses an edge.
+ *   core 1 (loop): reads both pins in a tight loop with the ESP32-S3's
+ *                  dedicated-GPIO instruction (about 50 ns per sample), time-
+ *                  stamps changes with the CPU cycle counter, and decodes the
+ *                  bit handshake (BitDecoder.h) into bytes for a ring buffer.
+ *                  Interrupts stay off on this core, because the calculators'
+ *                  handshake phases can be about 1 us long and a timer
+ *                  interrupt would hide them. They are let through briefly
+ *                  every 100 ms, preferably while the link is quiet, to keep
+ *                  the interrupt watchdog happy.
  *   core 0 (task): drains the ring buffer, assembles TI packets, checks their
  *                  checksums and prints them; also reads Serial commands.
  *
@@ -22,18 +28,38 @@
 #include "BitDecoder.h"
 #include <atomic>
 #include "esp_timer.h"
-#include "soc/gpio_reg.h"
+#include "esp_cpu.h"
+#include "driver/dedic_gpio.h"
+#include "hal/dedic_gpio_cpu_ll.h"
 
-// M5Stack Stamp S3. Both pins must be below 32 (read from GPIO_IN_REG).
-const uint8_t PIN_TIP  = 1;
-const uint8_t PIN_RING = 5;
-const uint32_t TIP_MASK  = 1UL << PIN_TIP;
-const uint32_t RING_MASK = 1UL << PIN_RING;
+// M5Stack Stamp S3
+const int PIN_TIP  = 1;
+const int PIN_RING = 5;
 
-const uint32_t RING_SIZE = 8192;    // decoded events buffered between the cores
+const uint32_t RING_SIZE = 4096;    // decoded events buffered between the cores
+const uint32_t TRACE_MAX = 4096;    // line changes kept by "trace"
 const uint32_t MAX_PACKET = 65536 + 6;  // id cmd len(2) data(<=65535) checksum(2)
 
 BitDecoder dec;
+
+// Sampler time base: CPU cycles counted from when the sampler started, which
+// was `startUs` microseconds after boot (the same clock "mark" prints).
+uint32_t cyclesPerUs = 240;
+volatile int64_t startUs = 0;
+
+uint64_t toUs(uint64_t cycles) { return startUs + cycles / cyclesPerUs; }
+uint32_t cyclesToNs(uint32_t c) { return (uint32_t)((uint64_t)c * 1000 / cyclesPerUs); }
+
+// "trace": the sampler records raw line changes here
+struct Edge { uint64_t cycles; uint8_t lines; };   // lines: bit 1 tip, bit 0 ring (1 = high)
+Edge *trace;
+volatile uint32_t traceArm = 0;     // set by the printer: record this many changes
+volatile uint32_t traceN = 0;       // recorded so far
+volatile bool traceOn = false, traceFull = false;
+
+// sampler health
+volatile uint32_t windows = 0, forcedWindows = 0;
+volatile const char *samplerError = nullptr;
 
 // ---------- ring buffer: single producer (core 1), single consumer (core 0) ----------
 
@@ -135,14 +161,6 @@ String tiChar(uint8_t c) {
 
 // ---------- time ----------
 
-// Events carry 32-bit microseconds (wrap every 71 minutes); extend to 64 bits.
-uint64_t extend(uint32_t t32) {
-  static uint32_t hi = 0, last = 0;
-  if (t32 < last && last - t32 > 0x80000000UL) hi++;
-  last = t32;
-  return ((uint64_t)hi << 32) | t32;
-}
-
 void printTime(uint64_t us) {
   Serial.printf("%6lu.%06lu", (unsigned long)(us / 1000000), (unsigned long)(us % 1000000));
 }
@@ -156,6 +174,7 @@ uint32_t pktAmbiguous = 0;
 uint32_t packets = 0, badChecksums = 0;
 bool rawMode = false;
 uint32_t gapFlushUs = 500000;  // leftover bytes this old are printed as "raw"
+int64_t lastByteSeenUs = 0;    // when the printer last received a byte (esp_timer)
 
 uint32_t expectedLen() {
   if (pktN < 4) return 4;
@@ -254,18 +273,28 @@ void flushRaw(const char *why) {
   pktAmbiguous = 0;
 }
 
+void printDuration(uint32_t cycles) {
+  uint32_t ns = cyclesToNs(cycles);
+  if (ns < 10000) Serial.printf("%lu ns", (unsigned long)ns);
+  else if (ns < 10000000) Serial.printf("%lu us", (unsigned long)(ns / 1000));
+  else Serial.printf("%lu ms", (unsigned long)(ns / 1000000));
+}
+
 void onByte(const LinkEvent &ev) {
-  uint64_t t = extend(ev.t);
+  uint64_t t = toUs(ev.t);
+  uint64_t dur = cyclesToNs(ev.dur) / 1000;
+  lastByteSeenUs = esp_timer_get_time();
   if (pktN && t - pktEnd > gapFlushUs) flushRaw("then a pause");
   if (rawMode) {
     Serial.print("  byte ");
     printTime(t);
-    Serial.printf("  %02X  %lu us%s\n", ev.value, (unsigned long)ev.dur,
-                  ev.ambiguous ? "  AMBIGUOUS" : "");
+    Serial.printf("  %02X  ", ev.value);
+    printDuration(ev.dur);
+    Serial.println(ev.ambiguous ? "  AMBIGUOUS" : "");
   }
   if (pktN == 0) pktStart = t;
   if (pktN < MAX_PACKET) pkt[pktN++] = ev.value;
-  pktEnd = t + ev.dur;
+  pktEnd = t + dur;
   pktAmbiguous += ev.ambiguous;
   if (pktN == expectedLen()) finishPacket();
 }
@@ -278,20 +307,40 @@ void onEvent(const LinkEvent &ev) {
   case LinkEvent::PARTIAL:
     flushRaw("before a partial byte");
     Serial.print("! partial byte at ");
-    printTime(extend(ev.t));
+    printTime(toUs(ev.t));
     Serial.printf(": only %u bits (so far %02X)\n", ev.bits, ev.value);
     break;
   case LinkEvent::NOACK:
-    Serial.print("! a bit was never acknowledged; sender let go after ");
-    Serial.printf("%lu.%03lu ms (%u bits into the byte)\n", (unsigned long)(ev.dur / 1000),
-                  (unsigned long)(ev.dur % 1000), ev.bits);
+    Serial.print("! at ");
+    printTime(toUs(ev.t));
+    Serial.print(" a line was pulled low for ");
+    printDuration(ev.dur);
+    Serial.printf(" and let go without an acknowledgement (%u bits into the byte)\n", ev.bits);
     break;
   case LinkEvent::STUCK:
     Serial.print("! a line has been held low since ");
-    printTime(extend(ev.t));
+    printTime(toUs(ev.t));
     Serial.println(" (waiting receiver, or unplugged?)");
     break;
   }
+}
+
+// ---------- trace ----------
+
+void printTrace() {
+  uint32_t n = traceN;
+  Serial.printf("trace: %lu line changes (time from the first; tip ring, 1 = high)\n",
+                (unsigned long)n);
+  for (uint32_t i = 0; i < n; i++) {
+    uint64_t sinceFirst = (trace[i].cycles - trace[0].cycles) * 1000 / cyclesPerUs;
+    uint64_t sincePrev = i ? (trace[i].cycles - trace[i - 1].cycles) * 1000 / cyclesPerUs : 0;
+    Serial.printf("  %13llu ns  +%11llu ns   %u %u\n", (unsigned long long)sinceFirst,
+                  (unsigned long long)sincePrev, (trace[i].lines >> 1) & 1, trace[i].lines & 1);
+  }
+  traceArm = 0;   // first, so the sampler doesn't start another trace
+  traceOn = false;
+  traceFull = false;
+  traceN = 0;
 }
 
 // ---------- commands ----------
@@ -305,13 +354,13 @@ void printHelp() {
     "  stats         counters and bit timing\n"
     "  zero          reset the counters\n"
     "  lines         show the current tip/ring levels\n"
+    "  trace [n]     record the next n line changes (default 400) and print them\n"
     "  help");
 }
 
 void printLines() {
-  uint32_t v = REG_READ(GPIO_IN_REG);
-  Serial.printf("tip %s  ring %s\n", (v & TIP_MASK) ? "high" : "LOW",
-                (v & RING_MASK) ? "high" : "LOW");
+  Serial.printf("tip %s  ring %s\n", digitalRead(PIN_TIP) ? "high" : "LOW",
+                digitalRead(PIN_RING) ? "high" : "LOW");
 }
 
 void printStats() {
@@ -322,9 +371,12 @@ void printStats() {
                 (unsigned long)dec.ambiguousBits, (unsigned long)dec.partials,
                 (unsigned long)dec.noacks, (unsigned long)dec.stucks,
                 (unsigned long)overflows);
-  if (dec.maxBitUs)
-    Serial.printf("bit time min %lu us  max %lu us\n", (unsigned long)dec.minBitUs,
-                  (unsigned long)dec.maxBitUs);
+  if (dec.maxBitTicks)
+    Serial.printf("time between bits in a byte: min %lu ns  max %lu ns\n",
+                  (unsigned long)cyclesToNs(dec.minBitTicks),
+                  (unsigned long)cyclesToNs(dec.maxBitTicks));
+  Serial.printf("interrupt windows %lu (forced during traffic %lu)\n", (unsigned long)windows,
+                (unsigned long)forcedWindows);
   printLines();
 }
 
@@ -354,12 +406,20 @@ void handleCommand(String line) {
     printStats();
   } else if (cmd == "zero") {
     dec.bytes = dec.partials = dec.noacks = dec.ambiguousBits = dec.stucks = 0;
-    dec.minBitUs = 0xFFFFFFFF;
-    dec.maxBitUs = 0;
-    packets = badChecksums = overflows = 0;
+    dec.minBitTicks = 0xFFFFFFFF;
+    dec.maxBitTicks = 0;
+    packets = badChecksums = overflows = windows = forcedWindows = 0;
     Serial.println("counters reset");
   } else if (cmd == "lines") {
     printLines();
+  } else if (cmd == "trace") {
+    long n = arg.length() ? arg.toInt() : 400;
+    if (n < 1) n = 1;
+    if (n > (long)TRACE_MAX) n = TRACE_MAX;
+    traceN = 0;
+    traceFull = false;
+    traceArm = n;
+    Serial.printf("trace: recording the next %ld line changes\n", n);
   } else {
     printHelp();
   }
@@ -372,7 +432,8 @@ void printerTask(void *) {
   Serial.begin(115200);
   delay(1500);
   Serial.println("\nesp32_tilink_c2c: passive TI link sniffer (tip G1, ring G5). Type help.");
-  Serial.printf("free heap %lu bytes\n", (unsigned long)ESP.getFreeHeap());
+  Serial.printf("free heap %lu bytes, CPU %lu MHz\n", (unsigned long)ESP.getFreeHeap(),
+                (unsigned long)cyclesPerUs);
   printLines();
 
   String line;
@@ -383,7 +444,12 @@ void printerTask(void *) {
       onEvent(ev);
       any = true;
     }
-    if (pktN && (uint64_t)esp_timer_get_time() - pktEnd > gapFlushUs) flushRaw("then a pause");
+    if (pktN && esp_timer_get_time() - lastByteSeenUs > (int64_t)gapFlushUs) flushRaw("then a pause");
+    if (traceFull) printTrace();
+    if (samplerError) {
+      Serial.printf("! sampler: %s\n", (const char *)samplerError);
+      samplerError = nullptr;
+    }
     while (Serial.available()) {
       char c = Serial.read();
       if (c == '\n' || c == '\r') {
@@ -402,10 +468,12 @@ void printerTask(void *) {
 void setup() {
   pinMode(PIN_TIP, INPUT);   // inputs only, no pull-ups: the calculators provide them
   pinMode(PIN_RING, INPUT);
+  cyclesPerUs = getCpuFrequencyMhz();
 
   ring = (LinkEvent *)malloc(RING_SIZE * sizeof(LinkEvent));
   pkt = (uint8_t *)malloc(MAX_PACKET);
-  if (!ring || !pkt) {
+  trace = (Edge *)malloc(TRACE_MAX * sizeof(Edge));
+  if (!ring || !pkt || !trace) {
     Serial.begin(115200);
     for (;;) {
       Serial.println("esp32_tilink_c2c: out of memory");
@@ -415,20 +483,83 @@ void setup() {
   xTaskCreatePinnedToCore(printerTask, "printer", 8192, nullptr, 1, nullptr, 0);
 }
 
+// Runs on core 1 and never returns.
 void loop() {
-  // Runs on core 1 and never returns.
   disableCore1WDT();
-  uint32_t last = REG_READ(GPIO_IN_REG) & (TIP_MASK | RING_MASK);
-  uint32_t spins = 0;
+  // Above everything else that may run on this core except the IPC task.
+  vTaskPrioritySet(nullptr, configMAX_PRIORITIES - 2);
+
+  // A dedicated-GPIO bundle belongs to the core that creates it: this one.
+  int pins[2] = {PIN_TIP, PIN_RING};
+  dedic_gpio_bundle_config_t cfg = {};
+  cfg.gpio_array = pins;
+  cfg.array_size = 2;
+  cfg.flags.in_en = 1;
+  dedic_gpio_bundle_handle_t bundle = nullptr;
+  uint32_t offset = 0;
+  if (dedic_gpio_new_bundle(&cfg, &bundle) != ESP_OK ||
+      dedic_gpio_get_in_offset(bundle, &offset) != ESP_OK) {
+    samplerError = "could not set up dedicated GPIO; not sampling";
+    for (;;) vTaskDelay(1000);
+  }
+  const uint32_t tipBit = 1UL << offset, ringBit = 1UL << (offset + 1);
+  const uint32_t mask = tipBit | ringBit;
+
+  dec.midByteTicks = 50000 * cyclesPerUs;      // 50 ms
+  dec.stuckTicks = 1000000 * cyclesPerUs;      // 1 s
+  const uint32_t windowEvery = 100000 * cyclesPerUs;   // 100 ms
+  const uint32_t windowForce = 200000 * cyclesPerUs;   // 200 ms (watchdog at 300)
+  const uint32_t quietBefore = 200 * cyclesPerUs;      // link idle this long = safe moment
+
   LinkEvent ev;
+  uint32_t last = dedic_gpio_cpu_ll_read_in() & mask;
+  uint32_t lastCycles = esp_cpu_get_cycle_count();
+  uint64_t hi = 0;          // upper part of the 64-bit cycle count
+  uint64_t lastChange = 0, lastWindow = 0;
+  uint32_t spins = 0;
+  startUs = esp_timer_get_time();
+  const uint32_t startCycles = lastCycles;
+
+  uint32_t irq = portSET_INTERRUPT_MASK_FROM_ISR();
   for (;;) {
-    uint32_t v = REG_READ(GPIO_IN_REG) & (TIP_MASK | RING_MASK);
+    uint32_t v = dedic_gpio_cpu_ll_read_in() & mask;
+    uint32_t c = esp_cpu_get_cycle_count();
+    if (c < lastCycles) hi += 1ULL << 32;
+    lastCycles = c;
+    uint64_t now = (hi | c) - startCycles;
+
     if (v != last) {
       last = v;
-      if (dec.feed(v & TIP_MASK, v & RING_MASK, (uint32_t)esp_timer_get_time(), ev)) push(ev);
-    } else if (++spins >= 4096) {
-      spins = 0;
-      if (dec.tick((uint32_t)esp_timer_get_time(), ev)) push(ev);
+      lastChange = now;
+      bool tip = v & tipBit, ringHigh = v & ringBit;
+      if (dec.feed(tip, ringHigh, now, ev)) push(ev);
+      if (traceOn) {
+        uint32_t n = traceN;
+        trace[n].cycles = now;
+        trace[n].lines = (tip ? 2 : 0) | (ringHigh ? 1 : 0);
+        traceN = ++n;
+        if (n >= traceArm) {
+          traceOn = false;
+          traceFull = true;
+        }
+      }
+      continue;
+    }
+    if (++spins < 256) continue;
+    spins = 0;
+    if (traceArm && !traceOn && !traceFull && traceN == 0) traceOn = true;
+    if (dec.tick(now, ev)) push(ev);
+
+    // Let pending interrupts (the 1 kHz tick) run for a moment.
+    uint64_t sinceWindow = now - lastWindow;
+    bool quiet = v == mask && now - lastChange >= quietBefore;
+    if ((quiet && sinceWindow >= windowEvery) || sinceWindow >= windowForce) {
+      if (!quiet) forcedWindows++;
+      windows++;
+      portCLEAR_INTERRUPT_MASK_FROM_ISR(irq);
+      __asm__ __volatile__("nop; nop; nop; nop; nop; nop; nop; nop");
+      irq = portSET_INTERRUPT_MASK_FROM_ISR();
+      lastWindow = now;
     }
   }
 }

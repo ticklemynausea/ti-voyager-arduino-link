@@ -66,6 +66,7 @@ For **T08a**, make a text file on A: `APPS` → Text Editor → New, name `t1`, 
 |---|---|---|
 | T00 | Monitor running, both calculators off. Switch A on, then B. Wait 10 s. Switch A off and on. Run `stats`. | noise, power-on chatter; ambiguous bits must be 0 |
 | T01 | B: VAR-LINK → `F3` Receive. A: VAR-LINK, ✓ `a`, `F3` → Send. | the basic sequence, machine IDs, the VAR header |
+| T01b | Repeat T01 with a mark before each step: `mark T01b B VAR-LINK`, `mark T01b B Receive`, `mark T01b A VAR-LINK`, `mark T01b A select a`, `mark T01b A F3`, `mark T01b A Send`. Wait a few seconds between steps. | which actions send RDY, and from which calculator |
 | T02 | B idle at Home. A at Home: `SendCalc a` | silent transfer vs VAR-LINK |
 | T03 | B at Home: `GetCalc a` (it waits). A: `SendCalc a` | GetCalc's side; whether the receiver initiates |
 

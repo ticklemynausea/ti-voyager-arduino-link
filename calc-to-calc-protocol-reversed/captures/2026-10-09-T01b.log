@@ -1,0 +1,81 @@
+# T01b, pasted from the Serial Monitor (no script recording). The 400-line
+# trace is shortened to its first RDY byte and one of the unexplained pulse
+# groups; its times after 4.3 s wrapped (a sniffer bug, since fixed) and are
+# omitted. The trace was armed before the mark, so it starts before it.
+# Before the mark, the calculator in VAR-LINK was B (opened VAR-LINK, then
+# chose Receive).
+
+==== T01b B Receive ====  at    602.197419
+trace: 400 line changes (time from the first; tip ring, 1 = high)
+           0 ns  +       0 ns   1 0
+        1608 ns  +    1608 ns   0 0
+        2970 ns  +    1362 ns   1 1
+       12687 ns  +    9716 ns   0 1
+       13704 ns  +    1016 ns   0 0
+       14458 ns  +     754 ns   1 0
+       15316 ns  +     858 ns   1 1
+       25612 ns  +   10295 ns   0 1
+       26483 ns  +     870 ns   0 0
+       27237 ns  +     754 ns   1 0
+       28241 ns  +    1004 ns   1 1
+       38620 ns  +   10379 ns   1 0
+       39345 ns  +     725 ns   0 0
+       40391 ns  +    1045 ns   0 1
+       41104 ns  +     712 ns   1 1
+       51400 ns  +   10295 ns   0 1
+       52270 ns  +     870 ns   0 0
+       53170 ns  +     900 ns   1 0
+       54029 ns  +     858 ns   1 1
+       64179 ns  +   10150 ns   0 1
+       65195 ns  +    1016 ns   0 0
+       65950 ns  +     754 ns   1 0
+       66808 ns  +     858 ns   1 1
+       77250 ns  +   10441 ns   0 1
+       78120 ns  +     870 ns   0 0
+       78729 ns  +     608 ns   1 0
+       79441 ns  +     712 ns   1 1
+       89766 ns  +   10325 ns   1 0
+       90637 ns  +     870 ns   0 0
+       92654 ns  +    2016 ns   1 1
+  ... (rest of RDY 89 68 00 00, then 822 us later ACK 89 56 0C 10) ...
+  ... one of the pulse groups (each group: three of these, about 16.5 ms apart):
+  2032299078 ns  +2030675628 ns   0 1
+  2032299949 ns  +     870 ns   0 0
+  2032501370 ns  +  201420 ns   1 0
+  2032501791 ns  +     420 ns   1 1
+  2049059324 ns  +16557533 ns   0 1
+  2049060195 ns  +     870 ns   0 0
+  2049261682 ns  +  201487 ns   1 0
+  2049262103 ns  +     420 ns   1 1
+  2134774803 ns  +85512700 ns   0 1
+  2134775820 ns  +    1016 ns   0 0
+  2134977095 ns  +  201275 ns   1 0
+  2134977516 ns  +     420 ns   1 1
+  ... (more groups, seconds apart; the trace ends in another RDY) ...
+[   604.550012 +   137.385553]  89 RDY  len 0      0.398 ms
+[   604.551235 +     0.000825]  89 ACK  len 4108  (header only)  0.388 ms
+mark T01b A VAR-LINK
+
+==== T01b A VAR-LINK ====  at    615.758433
+mark T01b A select a
+
+==== T01b A select a ====  at    626.892441
+mark T01b A F3
+
+==== T01b A F3 ====  at    637.703409
+mark T01b A Send             (choose Send)
+
+==== T01b A Send             (choose Send) ====  at    643.542520
+[   646.079735 +    41.528112]  89 RDY  len 0      0.388 ms
+[   646.080651 +     0.000528]  89 ACK  len 4108  (header only)  0.423 ms
+[   646.105354 +     0.024280]  88 VAR  len 8     ck OK  1.453 ms
+    size 5  type 00 expression  name "a"  rest: 00
+    0000: 05 00 00 00 00 01 61 00                          ......a.
+[   646.108280 +     0.001473]  88 ACK  len 0      0.398 ms
+[   646.108737 +     0.000059]  88 CTS  len 0      0.398 ms
+[   646.109761 +     0.000626]  88 ACK  len 0      0.389 ms
+[   646.110303 +     0.000153]  88 DATA len 9     ck OK  1.692 ms
+    0000: 00 00 00 00 00 03 05 01 1F                       .........
+[   646.112849 +     0.000854]  88 ACK  len 0      0.398 ms
+[   646.122411 +     0.009164]  88 EOT  len 0      0.386 ms
+[   646.149920 +     0.027123]  88 ACK  len 0      0.398 ms

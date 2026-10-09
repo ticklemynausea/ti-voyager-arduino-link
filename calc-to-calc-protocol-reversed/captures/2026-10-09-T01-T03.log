@@ -1,0 +1,56 @@
+zero
+counters reset
+mark T01
+
+==== T01 ====  at    232.683374
+[   238.684820 +    22.359605]  89 RDY  len 0      0.398 ms
+[   238.686043 +     0.000825]  89 ACK  len 4108  (header only)  0.389 ms
+[   242.079693 +     3.393261]  89 RDY  len 0      0.398 ms
+[   242.080916 +     0.000825]  89 ACK  len 4108  (header only)  0.388 ms
+[   252.881599 +    10.800295]  89 RDY  len 0      0.386 ms
+[   252.882496 +     0.000511]  89 ACK  len 4108  (header only)  0.441 ms
+[   252.907219 +     0.024282]  88 VAR  len 8     ck OK  1.452 ms
+    size 5  type 00 expression  name "a"  rest: 00
+    0000: 05 00 00 00 00 01 61 00                          ......a.
+[   252.910158 +     0.001487]  88 ACK  len 0      0.399 ms
+[   252.910616 +     0.000059]  88 CTS  len 0      0.397 ms
+[   252.911701 +     0.000688]  88 ACK  len 0      0.387 ms
+[   252.912242 +     0.000154]  88 DATA len 9     ck OK  2.409 ms
+    0000: 00 00 00 00 00 03 05 01 1F                       .........
+[   252.915199 +     0.000548]  88 ACK  len 0      0.400 ms
+[   252.927565 +     0.011966]  88 EOT  len 0      0.386 ms
+[   252.952265 +     0.024314]  88 ACK  len 0      0.400 ms
+mark T02
+
+==== T02 ====  at    260.842375
+[   267.502548 +    14.549883]  88 VAR  len 8     ck OK  2.451 ms
+    size 5  type 00 expression  name "a"  rest: 00
+    0000: 05 00 00 00 00 01 61 00                          ......a.
+[   267.545278 +     0.040279]  88 ACK  len 0      0.398 ms
+[   267.545735 +     0.000059]  88 CTS  len 0      1.092 ms
+[   267.547729 +     0.000902]  88 ACK  len 0      0.387 ms
+[   267.548271 +     0.000155]  88 DATA len 9     ck OK  1.482 ms
+    0000: 00 00 00 00 00 03 05 01 1F                       .........
+[   267.550815 +     0.001062]  88 ACK  len 0      0.398 ms
+[   267.551792 +     0.000579]  88 EOT  len 0      0.388 ms
+[   267.565841 +     0.013661]  88 ACK  len 0      0.399 ms
+mark T03
+
+==== T03 ====  at    271.494393
+[   279.969341 +    12.403101]  88 VAR  len 8     ck OK  1.454 ms
+    size 5  type 00 expression  name "a"  rest: 00
+    0000: 05 00 00 00 00 01 61 00                          ......a.
+[   279.972255 +     0.001460]  88 ACK  len 0      0.400 ms
+[   279.972712 +     0.000057]  88 CTS  len 0      0.399 ms
+[   279.973711 +     0.000600]  88 ACK  len 0      0.386 ms
+[   279.974252 +     0.000155]  88 DATA len 9     ck OK  2.493 ms
+    0000: 00 00 00 00 00 03 05 01 1F                       .........
+[   279.977236 +     0.000491]  88 ACK  len 0      0.399 ms
+[   279.978215 +     0.000580]  88 EOT  len 0      0.385 ms
+[   279.983461 +     0.004861]  88 ACK  len 0      0.505 ms
+stats
+bytes 183  packets 30  bad checksums 0
+ambiguous bits 0  partial bytes 0  unacked bits 0  held lines 0  buffer overflows 0
+time between bits in a byte: min 11587 ns  max 13366 ns
+interrupt windows 655 (forced during traffic 0)
+tip high  ring high
