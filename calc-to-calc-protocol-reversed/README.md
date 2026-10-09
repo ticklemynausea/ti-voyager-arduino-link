@@ -107,8 +107,15 @@ both share the same lines. That is worked out in PROTOCOL.md from the order of
 the commands.
 
 Commands: `mark <text>`, `raw on|off` (also log every byte and its timing),
-`gap <ms>`, `stats`, `zero`, `lines`, `trace [n]` (record the next n raw line
-changes with nanosecond timing, then print them), `help`.
+`gap <ms>`, `stats`, `zero`, `lines`, `trace [n]` (print the last n raw line
+changes with their timing), `auto on|off`, `help`.
+
+The sniffer keeps a rolling history of the last 16,384 line changes. When
+something looks wrong (a partial byte, a pull nobody acknowledged, bytes that
+don't form a packet, a bad checksum), it prints the history around that
+moment automatically. The `stats` line "longest pause between two samples"
+should stay well under 1000 ns; anything longer means the sampler itself
+stalled.
 
 ### Sanity checks
 

@@ -1,6 +1,7 @@
 # Voyage 200 calculator-to-calculator link protocol
 
-**Status: in progress.** T01–T03 and T01b are captured (`captures/`). Each section is filled in from the tests
+**Status: in progress.** T01–T05 are captured (`captures/`); T04–T05 are in
+`captures/2026-10-09_190006.log`. Each section is filled in from the tests
 in [TESTS.md](TESTS.md), and every finding cites the test ID that showed it.
 
 Each section has two parts:
@@ -44,6 +45,9 @@ Observed (T01–T03, all 183 bytes):
   two calculators apart. To check with more traces.
 - A passive tap must sample much faster than the bit rate to see the
   sub-microsecond phases (see the sniffer's header comment).
+
+- **A longer packet is slower per byte:** T05c's 309-byte DATA took 38.9 ms,
+  which is 126 µs per byte, or 8.1 kB/s.
 
 To measure (T17): throughput for a large variable, and the gaps between DATA
 packets.
@@ -165,15 +169,40 @@ Inferred:
   opens and again when it sends. The other calculator's OS answers it, even
   from the Home screen.
 - **Choosing Receive sends nothing**: the receiver just waits.
+- **T04 and T05 fit this.** In T04, VAR-LINK was reopened for each test, and
+  each test had two RDY/ACK pairs, 11–17 s apart. In T05, VAR-LINK stayed open
+  (Receive was chosen again each time), and each test had one pair, at Send.
 - **T01's third RDY is not yet explained.** A opening VAR-LINK sent nothing in
   the rerun. Maybe B opened VAR-LINK twice in T01.
 
-### 5.3 Several variables, T11; a folder, T12
-### 5.4 Variable already exists: overwrite / skip / rename, T13
-### 5.5 Receiver not listening, T14
-### 5.6 Aborts, T15–T16
-### 5.7 Large variables, T17
-### 5.8 `SendChat`, T18
+### 5.3 Several variables (seen in the first T05a attempt; T11 to confirm)
+
+Some variables were still selected in VAR-LINK from T04, so the first T05a
+attempt sent `a` and `s0` together:
+
+```
+A: RDY  ->  B: ACK
+A: VAR a          ->  B: ACK, CTS  ->  A: ACK, DATA  ->  B: ACK
+A: VAR s0 (30 ms later)  ->  B: ACK, CTS  ->  A: ACK, DATA  ->  B: ACK
+A: EOT            ->  B: ACK
+```
+
+Observed:
+- **There is no EOT between the variables.** The next VAR simply follows,
+  about 30 ms after the previous DATA's ACK.
+- **One EOT ends the whole batch.**
+
+A second attempt, sending `a` and `s1`, lost the first byte of its VAR
+(sniffer bug). What was left of it shows the same pattern, with a 2.5 s pause
+in the middle, perhaps while B asked whether to overwrite `a`. T13 will
+capture that cleanly.
+
+### 5.4 Folders, T12
+### 5.5 Variable already exists: overwrite / skip / rename, T13
+### 5.6 Receiver not listening, T14
+### 5.7 Aborts, T15–T16
+### 5.8 Large variables, T17
+### 5.9 `SendChat`, T18
 
 ## 6. Variable header (VAR / RTS)
 
@@ -185,7 +214,11 @@ size (LE32) | type | name length | "a" | ?
 ```
 
 - **`size` (5)** counts the DATA payload after its 4 leading zero bytes: the
-  2-byte length plus the 3 bytes of the value.
+  2-byte length plus the 3 bytes of the value. This holds for every variable
+  in T04–T05, for example 305 for T05c's 309-byte DATA.
+- **`size` is little-endian:** 305 is sent as `31 01 00 00`.
+- **The type** was `00` for every T04 value (numbers, fractions, complex
+  numbers, `x+1`) and `0C` for strings.
 - **The byte after the name** was `00`. It is probably attributes (locked,
   archived): T10.
 
@@ -197,13 +230,61 @@ To find out:
 
 ## 7. Data encodings
 
-Starting point: strings and functions, as decoded in the main README, with
-sizes big-endian inside the data.
+Every DATA payload is laid out the same way:
+
+```
+00 00 00 00 | length (BE16) | content
+```
+
+- **`length` is big-endian:** 303 is sent as `01 2F` (T05c).
+- **The content is in the calculator's expression format:** a sequence of
+  tags that is read **from the end backwards**. The last byte is the outermost
+  tag, and each tag's operands come before it.
+
+Tags observed so far (T01–T05, plus the function captures in the main
+README):
+
+| Tag | Meaning | Operands, reading backwards from the tag | Seen in |
+|---|---|---|---|
+| `1F` | positive integer | length *n*, then *n* bytes of value, **little-endian** | T01, T04e |
+| `20` | negative integer | as `1F` | T04a |
+| `21` | positive fraction | numerator, then denominator, each as length + bytes | T04c |
+| `23` | float | 9 bytes: exponent (BE16, bias `0x4000`), then 14 BCD digits | T04b, T04d |
+| `26` | 𝐢, probably | none | T04f |
+| `8B` | + | two operands | T04f, T04g |
+| `8F` | × | two operands | T04f |
+| `08` | variable x | none | T04g |
+| `2D` | string | `00`, the text, `00` (reading forwards) | T05 |
+
+These values match the expression tags in the TIGCC documentation (`estack.h`,
+for example `POSINT_TAG` 1F, `FLOAT_TAG` 23, `ADD_TAG` 8B, `MUL_TAG` 8F,
+`STR_DATA_TAG` 2D, `END_TAG` E5). That list is the reference for decoding
+the rest; the captures here confirm the entries one at a time.
+
+Worked examples (content only, after the length):
+
+| Test | Value | Content | Reading |
+|---|---|---|---|
+| T01 | 5 | `05 01 1F` | integer, 1 byte, 5 |
+| T04a | −5 | `05 01 20` | negative integer, 1 byte, 5 |
+| T04b | 1.5 | `40 00 15 00 00 00 00 00 00 23` | float: exponent `4000` = 10⁰, digits 1.5000… |
+| T04c | 1/3 | `03 01 01 01 21` | fraction: numerator `01 01` = 1, denominator `03 01` = 3 |
+| T04d | 1.1E100 | `40 64 11 00 00 00 00 00 00 23` | float: exponent `4064` = 10¹⁰⁰, digits 1.1 |
+| T04e | 2⁷⁰ | `00 00 00 00 00 00 00 00 40 09 1F` | integer, 9 bytes, little-endian: `40` in the top byte = 2⁶·2⁶⁴ |
+| T04f | 2+3𝐢 | `02 01 1F 03 01 1F 26 8F 8B` | + ( × (𝐢, 3), 2 ): stored as an expression, not as a complex-number type |
+| T04g | x+1 | `08 01 01 1F 8B` | + (1, x) |
+| T05a | `""` | `00 00 2D` | empty string |
+| T05b | `"a"` | `00 61 00 2D` | one character |
+| T05c | 300 digits | `00 "1000…0" 00 2D` | length `01 2F` = 303 |
+
+- **T04d** was entered as `1.1E100` (the test plan said `1.E100`), which
+  matches the digits.
+- **T05b's** string was entered as lowercase `"a"`.
 
 | Type | Code | Test | Layout |
 |---|---|---|---|
-| expression / number | 00 | T01–T03, T04 | `00 00 00 00 \| length (BE16) \| content`. The integer 5 is `05 01 1F`: the value, its length in bytes (1), and the tag `1F` (positive integer). These are the same integer tokens seen in function bodies, which are read from the end backwards. |
-| string | 0C | T05 | |
+| expression / number | 00 | T01–T04 | expression tags, see above |
+| string | 0C | T05 | `00 \| text \| 00 \| 2D` |
 | list | 04 | T06a–b | |
 | matrix | 06 | T06c | |
 | function | 13 | T07a | |
@@ -230,4 +311,3 @@ sizes big-endian inside the data.
 
   The pattern looks like a presence or activity probe rather than data. To
   pin down when it happens, mark each step.
-- How are integers longer than one byte stored (T04e)?

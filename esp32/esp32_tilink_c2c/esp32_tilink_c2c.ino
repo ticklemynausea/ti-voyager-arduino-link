@@ -15,14 +15,13 @@
  *                  dedicated-GPIO instruction (about 50 ns per sample), time-
  *                  stamps changes with the CPU cycle counter, and decodes the
  *                  bit handshake (BitDecoder.h) into bytes for a ring buffer.
- *                  Interrupts stay off on this core, because the calculators'
- *                  handshake phases can be about 1 us long and a timer
- *                  interrupt would hide them. They are let through briefly
- *                  every 100 ms, preferably while the link is quiet, to keep
- *                  the interrupt watchdog happy. The sampler and decoder run
- *                  from internal RAM (IRAM): code fetched through the flash
- *                  cache can stall for microseconds on a miss, which lost the
- *                  first bits of a packet after a quiet spell.
+ *                  Interrupts stay off on this core for good, because the
+ *                  calculators' handshake phases can be about 1 us long and
+ *                  any interrupt could hide them; the sampler feeds the
+ *                  interrupt watchdog itself. The sampler and decoder run from
+ *                  internal RAM (IRAM), so they never wait on the flash cache.
+ *                  Every line change also goes into a rolling history, which
+ *                  is printed around anything that looks wrong.
  *   core 0 (task): drains the ring buffer, assembles TI packets, checks their
  *                  checksums and prints them; also reads Serial commands.
  *
@@ -36,13 +35,15 @@
 #include "esp_cpu.h"
 #include "driver/dedic_gpio.h"
 #include "hal/dedic_gpio_cpu_ll.h"
+#include "hal/wdt_hal.h"
+#include "soc/timer_group_struct.h"
 
 // M5Stack Stamp S3
 const int PIN_TIP  = 1;
 const int PIN_RING = 5;
 
 const uint32_t RING_SIZE = 4096;    // decoded events buffered between the cores
-const uint32_t TRACE_MAX = 4096;    // line changes kept by "trace"
+const uint32_t HIST_SIZE = 16384;   // line changes kept in the history (power of 2)
 const uint32_t MAX_PACKET = 65536 + 6;  // id cmd len(2) data(<=65535) checksum(2)
 
 BitDecoder dec;
@@ -55,15 +56,16 @@ volatile int64_t startUs = 0;
 uint64_t toUs(uint64_t cycles) { return startUs + cycles / cyclesPerUs; }
 uint32_t cyclesToNs(uint32_t c) { return (uint32_t)((uint64_t)c * 1000 / cyclesPerUs); }
 
-// "trace": the sampler records raw line changes here
-struct Edge { uint64_t cycles; uint8_t lines; };   // lines: bit 1 tip, bit 0 ring (1 = high)
-Edge *trace;
-volatile uint32_t traceArm = 0;     // set by the printer: record this many changes
-volatile uint32_t traceN = 0;       // recorded so far
-volatile bool traceOn = false, traceFull = false;
+// History of line changes, oldest overwritten. Each entry is
+// (cycles since the previous change << 2) | lines, where lines is bit 1 tip,
+// bit 0 ring (1 = high); the gap saturates at about 4.5 s.
+uint32_t *hist;
+volatile uint32_t histCount = 0;    // changes written so far (next slot: count % size)
+volatile uint64_t histNewest = 0;   // time of the newest change, in sampler cycles
+volatile bool histHold = false;     // set while the printer reads; the sampler skips writing
 
 // sampler health
-volatile uint32_t windows = 0, forcedWindows = 0;
+volatile uint32_t maxGapCycles = 0;   // longest time between two samples
 volatile const char *samplerError = nullptr;
 
 // ---------- ring buffer: single producer (core 1), single consumer (core 0) ----------
@@ -177,6 +179,7 @@ uint32_t pktN = 0;
 uint64_t pktStart = 0, pktEnd = 0, prevPktEnd = 0;
 uint32_t pktAmbiguous = 0;
 uint32_t packets = 0, badChecksums = 0;
+uint64_t badChecksumAt = 0;   // start of a packet with a bad checksum (us), to dump
 bool rawMode = false;
 uint32_t gapFlushUs = 500000;  // leftover bytes this old are printed as "raw"
 int64_t lastByteSeenUs = 0;    // when the printer last received a byte (esp_timer)
@@ -247,6 +250,7 @@ void finishPacket() {
     if (!ok) badChecksums++;
     Serial.printf(" ck %s", ok ? "OK" : "BAD");
     if (!ok) Serial.printf(" (sum %04X, sent %04X)", sum, got);
+    if (!ok) badChecksumAt = pktStart;
   }
   uint64_t dur = pktEnd - pktStart;
   Serial.printf("  %lu.%03lu ms", (unsigned long)(dur / 1000), (unsigned long)(dur % 1000));
@@ -261,6 +265,10 @@ void finishPacket() {
     else if (c == 0x36) Serial.printf("    reason %02X\n", d[0]);
     hexDump(d, len);
   }
+  if (badChecksumAt) {
+    dumpAround(usToCycles(badChecksumAt), 24, 160, "start of the packet with the bad checksum");
+    badChecksumAt = 0;
+  }
   prevPktEnd = pktEnd;
   pktN = 0;
   pktAmbiguous = 0;
@@ -273,6 +281,7 @@ void flushRaw(const char *why) {
   if (pktAmbiguous) Serial.printf("  ! %lu AMBIGUOUS bits", (unsigned long)pktAmbiguous);
   Serial.println();
   hexDump(pkt, pktN);
+  dumpAround(usToCycles(pktStart), 24, 160, "start of these bytes");
   prevPktEnd = pktEnd;
   pktN = 0;
   pktAmbiguous = 0;
@@ -314,6 +323,7 @@ void onEvent(const LinkEvent &ev) {
     Serial.print("! partial byte at ");
     printTime(toUs(ev.t));
     Serial.printf(": only %u bits (so far %02X)\n", ev.bits, ev.value);
+    dumpAround(ev.t, 24, 120, "start of the partial byte");
     break;
   case LinkEvent::NOACK:
     Serial.print("! at ");
@@ -321,6 +331,7 @@ void onEvent(const LinkEvent &ev) {
     Serial.print(" a line was pulled low for ");
     printDuration(ev.dur);
     Serial.printf(" and let go without an acknowledgement (%u bits into the byte)\n", ev.bits);
+    dumpAround(ev.t, 24, 120, "unacknowledged pull");
     break;
   case LinkEvent::STUCK:
     Serial.print("! a line has been held low since ");
@@ -330,23 +341,82 @@ void onEvent(const LinkEvent &ev) {
   }
 }
 
-// ---------- trace ----------
+// ---------- history ----------
 
-void printTrace() {
-  uint32_t n = traceN;
-  Serial.printf("trace: %lu line changes (time from the first; tip ring, 1 = high)\n",
-                (unsigned long)n);
-  for (uint32_t i = 0; i < n; i++) {
-    uint64_t sinceFirst = (trace[i].cycles - trace[0].cycles) * 1000 / cyclesPerUs;
-    uint64_t sincePrev = i ? (trace[i].cycles - trace[i - 1].cycles) * 1000 / cyclesPerUs : 0;
-    Serial.printf("  %13llu ns  +%11llu ns   %u %u\n", (unsigned long long)sinceFirst,
-                  (unsigned long long)sincePrev, (trace[i].lines >> 1) & 1, trace[i].lines & 1);
-  }
-  traceArm = 0;   // first, so the sampler doesn't start another trace
-  traceOn = false;
-  traceFull = false;
-  traceN = 0;
+bool autoDump = true;
+int64_t lastDumpUs = -10000000;
+
+static inline uint32_t histGap(uint32_t back) {   // back 0 = newest
+  return hist[(histCount - 1 - back) & (HIST_SIZE - 1)] >> 2;
 }
+static inline uint8_t histLines(uint32_t back) {
+  return hist[(histCount - 1 - back) & (HIST_SIZE - 1)] & 3;
+}
+
+// Print the changes from `first` back to `last` back (first >= last), with
+// times relative to `ref` (sampler cycles). Call with histHold set.
+void printEdges(uint32_t first, uint32_t last, uint64_t ref) {
+  uint64_t t = histNewest;
+  for (uint32_t k = 0; k < first; k++) t -= histGap(k);
+  uint64_t prev = t;
+  Serial.println("      time (us)    since prev   tip ring");
+  for (uint32_t k = first + 1; k-- > last;) {
+    if (k != first) t += histGap(k);
+    int64_t rel = (int64_t)(t - ref) * 1000 / cyclesPerUs;   // ns
+    Serial.printf("  %+13.3f  %+10.3f    %u   %u\n", rel / 1000.0,
+                  (double)((t - prev) * 1000 / cyclesPerUs) / 1000.0, (histLines(k) >> 1) & 1,
+                  histLines(k) & 1);
+    prev = t;
+  }
+}
+
+uint32_t histAvailable() { return histCount < HIST_SIZE ? histCount : HIST_SIZE; }
+
+void holdHistory(bool hold) {
+  histHold = hold;
+  if (hold) vTaskDelay(1);   // let a write in progress finish
+}
+
+// "trace [n]": the last n line changes.
+void printLastEdges(uint32_t n) {
+  holdHistory(true);
+  uint32_t avail = histAvailable();
+  if (n > avail) n = avail;
+  if (n) {
+    Serial.printf("last %lu line changes:\n", (unsigned long)n);
+    uint64_t t = histNewest;
+    for (uint32_t k = 0; k < n - 1; k++) t -= histGap(k);
+    printEdges(n - 1, 0, t);
+  } else {
+    Serial.println("no line changes recorded yet");
+  }
+  holdHistory(false);
+}
+
+// Print the line changes around sampler time `at`: `before` changes before
+// it and up to `after` from it on.
+void dumpAround(uint64_t at, uint32_t before, uint32_t after, const char *why) {
+  if (!autoDump) return;
+  int64_t nowUs = esp_timer_get_time();
+  if (nowUs - lastDumpUs < 2000000) return;   // at most one every 2 s
+  lastDumpUs = nowUs;
+  holdHistory(true);
+  uint32_t avail = histAvailable();
+  if (avail) {
+    uint64_t t = histNewest;
+    uint32_t k = 0;
+    while (k + 1 < avail && t >= at) t -= histGap(k++);
+    uint32_t atK = (t < at && k > 0) ? k - 1 : k;    // first change at or after `at`
+    uint32_t first = atK + before < avail ? atK + before : avail - 1;
+    uint32_t last = atK > after ? atK - after : 0;
+    Serial.printf("  line history around the %s (times relative to it; \"auto off\" to stop "
+                  "these):\n", why);
+    printEdges(first, last, at);
+  }
+  holdHistory(false);
+}
+
+uint64_t usToCycles(uint64_t us) { return (us - startUs) * cyclesPerUs; }
 
 // ---------- commands ----------
 
@@ -359,7 +429,8 @@ void printHelp() {
     "  stats         counters and bit timing\n"
     "  zero          reset the counters\n"
     "  lines         show the current tip/ring levels\n"
-    "  trace [n]     record the next n line changes (default 400) and print them\n"
+    "  trace [n]     print the last n line changes (default 400)\n"
+    "  auto on|off   print the line history around anomalies (default on)\n"
     "  help");
 }
 
@@ -380,8 +451,8 @@ void printStats() {
     Serial.printf("time between bits in a byte: min %lu ns  max %lu ns\n",
                   (unsigned long)cyclesToNs(dec.minBitTicks),
                   (unsigned long)cyclesToNs(dec.maxBitTicks));
-  Serial.printf("interrupt windows %lu (forced during traffic %lu)\n", (unsigned long)windows,
-                (unsigned long)forcedWindows);
+  Serial.printf("longest pause between two samples %lu ns\n",
+                (unsigned long)cyclesToNs(maxGapCycles));
   printLines();
 }
 
@@ -413,18 +484,16 @@ void handleCommand(String line) {
     dec.bytes = dec.partials = dec.noacks = dec.ambiguousBits = dec.stucks = 0;
     dec.minBitTicks = 0xFFFFFFFF;
     dec.maxBitTicks = 0;
-    packets = badChecksums = overflows = windows = forcedWindows = 0;
+    packets = badChecksums = overflows = maxGapCycles = 0;
     Serial.println("counters reset");
   } else if (cmd == "lines") {
     printLines();
   } else if (cmd == "trace") {
     long n = arg.length() ? arg.toInt() : 400;
-    if (n < 1) n = 1;
-    if (n > (long)TRACE_MAX) n = TRACE_MAX;
-    traceN = 0;
-    traceFull = false;
-    traceArm = n;
-    Serial.printf("trace: recording the next %ld line changes\n", n);
+    printLastEdges(n < 1 ? 1 : (uint32_t)n);
+  } else if (cmd == "auto") {
+    autoDump = (arg != "off");
+    Serial.printf("auto %s\n", autoDump ? "on" : "off");
   } else {
     printHelp();
   }
@@ -450,7 +519,6 @@ void printerTask(void *) {
       any = true;
     }
     if (pktN && esp_timer_get_time() - lastByteSeenUs > (int64_t)gapFlushUs) flushRaw("then a pause");
-    if (traceFull) printTrace();
     if (samplerError) {
       Serial.printf("! sampler: %s\n", (const char *)samplerError);
       samplerError = nullptr;
@@ -477,8 +545,8 @@ void setup() {
 
   ring = (LinkEvent *)malloc(RING_SIZE * sizeof(LinkEvent));
   pkt = (uint8_t *)malloc(MAX_PACKET);
-  trace = (Edge *)malloc(TRACE_MAX * sizeof(Edge));
-  if (!ring || !pkt || !trace) {
+  hist = (uint32_t *)malloc(HIST_SIZE * sizeof(uint32_t));
+  if (!ring || !pkt || !hist) {
     Serial.begin(115200);
     for (;;) {
       Serial.println("esp32_tilink_c2c: out of memory");
@@ -518,61 +586,62 @@ void loop() {
 }
 
 // The sampling loop. In IRAM, like the decoder it calls (see the header comment).
-static IRAM_ATTR __attribute__((noinline)) void sampleForever(const uint32_t tipBit, const uint32_t ringBit) {
+static IRAM_ATTR __attribute__((noinline)) void sampleForever(const uint32_t tipBit,
+                                                             const uint32_t ringBit) {
   const uint32_t mask = tipBit | ringBit;
-  const uint32_t windowEvery = 100000 * cyclesPerUs;   // 100 ms
-  const uint32_t windowForce = 200000 * cyclesPerUs;   // 200 ms (watchdog at 300)
-  const uint32_t quietBefore = 200 * cyclesPerUs;      // link idle this long = safe moment
+  const uint32_t feedEvery = 50000 * cyclesPerUs;   // 50 ms (interrupt watchdog: 300 ms)
+
+  // The interrupt watchdog is timer group 1's watchdog. Normally core 0's tick
+  // feeds it once core 1 has ticked too; core 1 never ticks here, so feed it.
+  wdt_hal_context_t iwdt = {};
+  iwdt.inst = WDT_MWDT1;
+  iwdt.mwdt_dev = &TIMERG1;
 
   LinkEvent ev;
   uint32_t last = dedic_gpio_cpu_ll_read_in() & mask;
   uint32_t lastCycles = esp_cpu_get_cycle_count();
   uint64_t hi = 0;          // upper part of the 64-bit cycle count
-  uint64_t lastChange = 0, lastWindow = 0;
-  uint32_t spins = 0;
+  uint64_t lastFeed = 0;
+  uint32_t spins = 0, gap = 0;
   startUs = esp_timer_get_time();
   const uint32_t startCycles = lastCycles;
 
-  uint32_t irq = portSET_INTERRUPT_MASK_FROM_ISR();
+  portSET_INTERRUPT_MASK_FROM_ISR();   // for good
   for (;;) {
     uint32_t v = dedic_gpio_cpu_ll_read_in() & mask;
     uint32_t c = esp_cpu_get_cycle_count();
+    uint32_t d = c - lastCycles;
+    if (d > gap) {
+      gap = d;
+      if (gap > maxGapCycles) maxGapCycles = gap;
+    }
     if (c < lastCycles) hi += 1ULL << 32;
     lastCycles = c;
     uint64_t now = (hi | c) - startCycles;
 
     if (v != last) {
       last = v;
-      lastChange = now;
       bool tip = v & tipBit, ringHigh = v & ringBit;
       if (dec.feed(tip, ringHigh, now, ev)) push(ev);
-      if (traceOn) {
-        uint32_t n = traceN;
-        trace[n].cycles = now;
-        trace[n].lines = (tip ? 2 : 0) | (ringHigh ? 1 : 0);
-        traceN = ++n;
-        if (n >= traceArm) {
-          traceOn = false;
-          traceFull = true;
-        }
+      if (!histHold) {
+        uint64_t since = now - histNewest;
+        uint32_t s30 = since > 0x3FFFFFFF ? 0x3FFFFFFF : (uint32_t)since;
+        uint32_t n = histCount;
+        hist[n & (HIST_SIZE - 1)] = (s30 << 2) | (tip ? 2 : 0) | (ringHigh ? 1 : 0);
+        histNewest = now;
+        histCount = n + 1;
       }
       continue;
     }
     if (++spins < 256) continue;
     spins = 0;
-    if (traceArm && !traceOn && !traceFull && traceN == 0) traceOn = true;
+    if (maxGapCycles == 0) gap = 0;   // "zero" was typed
     if (dec.tick(now, ev)) push(ev);
-
-    // Let pending interrupts (the 1 kHz tick) run for a moment.
-    uint64_t sinceWindow = now - lastWindow;
-    bool quiet = v == mask && now - lastChange >= quietBefore;
-    if ((quiet && sinceWindow >= windowEvery) || sinceWindow >= windowForce) {
-      if (!quiet) forcedWindows++;
-      windows++;
-      portCLEAR_INTERRUPT_MASK_FROM_ISR(irq);
-      __asm__ __volatile__("nop; nop; nop; nop; nop; nop; nop; nop");
-      irq = portSET_INTERRUPT_MASK_FROM_ISR();
-      lastWindow = now;
+    if (now - lastFeed >= feedEvery) {
+      wdt_hal_write_protect_disable(&iwdt);
+      wdt_hal_feed(&iwdt);
+      wdt_hal_write_protect_enable(&iwdt);
+      lastFeed = now;
     }
   }
 }

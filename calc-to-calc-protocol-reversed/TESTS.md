@@ -25,7 +25,7 @@ Keys on the Voyage 200:
 
 ```
 5→a
-"A"→s1
+"a"→s1
 ""→s0
 string(10^299)→s3
 {1,2,3}→l1
@@ -81,7 +81,7 @@ Yes to overwrite, and note it).
 | T04a | `-5→a` | negative integer |
 | T04b | `1.5→a` | float (BCD?) |
 | T04c | `1/3→a` | exact fraction |
-| T04d | `1.E100→a` | exponent |
+| T04d | `1.1E100→a` | exponent |
 | T04e | `2^70→a` | big integer |
 | T04f | `2+3𝐢→a` | complex |
 | T04g | `x+1→a` (make sure `x` is undefined: `DelVar x`) | symbolic expression |
