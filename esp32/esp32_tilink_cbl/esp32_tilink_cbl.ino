@@ -433,8 +433,9 @@ bool pushVar(uint8_t id, uint8_t type, const String &name, const uint8_t prefix[
              const uint8_t *content, uint16_t contentLen, uint8_t startCmd,
              uint32_t firstReplyUs) {
   static uint8_t data[MAX_DATA];
-  if (contentLen + 4 > MAX_DATA || name.length() == 0 || name.length() > 8) {
-    Serial.println("! name must be 1-8 characters and the value must fit in one packet");
+  // An empty name is allowed: it is one of the Get-answer variants being tested.
+  if (contentLen + 4 > MAX_DATA || name.length() > 8) {
+    Serial.println("! name must be at most 8 characters and the value must fit in one packet");
     return false;
   }
 
@@ -501,9 +502,29 @@ String tiNumber(double v) {
   return s;
 }
 
-// List in the CBL format from the Send captures (id 0x19, name FF):
+// ---------- answering Get: settings ----------
+//
+// The calculator never ACKs our answer's VAR header, so the header fields
+// are settable from the Serial Monitor (getid / gettype / getname / getack)
+// to try variants without reflashing. Defaults = the first attempt:
+// id 0x19, type 0x04 (list), name FF, ACK the REQ first.
+uint8_t getId = 0x19;
+uint8_t getType = 0x04;
+String  getName = String((char)0xFF);
+bool    getAck = true;
+
+void printGetCfg() {
+  Serial.printf("Get answer: id 0x%02X  type 0x%02X  name %s  ack-first %s\n", getId,
+                getType,
+                getName.length() ? (String("0x") + String((uint8_t)getName[0], HEX)).c_str()
+                                 : "none",
+                getAck ? "on" : "off");
+}
+
+// List in the CBL format from the Send captures:
 // prefix = element count (4 bytes LE), content = " v1 v2 v3" + 00.
-// Sent as the answer to a Get request (see handleReq).
+// Sent as the answer to a Get request (see handleReq), with the header
+// fields from the settings above.
 bool sendCblList(const double *v, uint16_t count) {
   static uint8_t content[MAX_DATA];
   uint16_t n = 0;
@@ -514,8 +535,7 @@ bool sendCblList(const double *v, uint16_t count) {
   }
   content[n++] = 0x00;
   const uint8_t prefix[4] = {(uint8_t)count, (uint8_t)(count >> 8), 0, 0};
-  return pushVar(0x19, 0x04, String((char)0xFF), prefix, content, n, CMD_VAR,
-                 REPLY_TIMEOUT_US);
+  return pushVar(getId, getType, getName, prefix, content, n, CMD_VAR, REPLY_TIMEOUT_US);
 }
 
 // ---------- answering Get ----------
@@ -523,20 +543,26 @@ bool sendCblList(const double *v, uint16_t count) {
 // "Get x" on the calculator sends a REQ (0xA2) with id 0x89, data
 // 00 00 00 00 1E 00 (captured), and waits. The answer is set beforehand
 // with "reply <numbers>" and is sent for every Get until changed.
-// Guessed exchange: ESP -> ACK, then the list as a normal transfer
-// (VAR -> ACK, CTS -> ACK, DATA -> ACK -> EOT -> ACK).
+// Exchange, per the TI-89/V200 link guide's "silent transfers" (answering a
+// REQ): ESP -> ACK, VAR -> calc ACK, CTS -> ESP ACK, DATA -> calc ACK ->
+// ESP EOT -> calc ACK. With the defaults the calculator never ACKs the VAR
+// and then reports "Protected memory violation", so the header is wrong.
 
 double   replyVals[MAX_LIST];
 uint16_t replyCount = 0;
 
 void handleReq() {
   if (!pkt.checksumOk) return;
+  if (pkt.stored >= 6) {
+    Serial.printf("   Get request: type 0x%02X, name length %u\n", pkt.data[4], pkt.data[5]);
+  }
   if (replyCount == 0) {
-    Serial.println("   Get request, but no answer set (use: reply <n1> <n2> ...)");
+    Serial.println("   no answer set (use: reply <n1> <n2> ...)");
     return;
   }
-  deviceId = 0x19;
-  if (!sendPacket(CMD_ACK)) return;
+  printGetCfg();
+  deviceId = getId;
+  if (getAck && !sendPacket(CMD_ACK)) return;
   sendCblList(replyVals, replyCount);
 }
 
@@ -548,6 +574,11 @@ const char *HELP =
   "commands:\n"
   "  push <name> <text>      send a string variable (calculator idle at Home screen)\n"
   "  reply <n1> <n2> ...     answer for Get x on the calculator; 'reply' alone clears\n"
+  "  getid <hex>             Get answer: machine id (default 19)\n"
+  "  gettype <hex>           Get answer: variable type (default 04)\n"
+  "  getname <hex> | none    Get answer: one-byte name, or no name (default ff)\n"
+  "  getack on | off         Get answer: ACK the request first (default on)\n"
+  "  getcfg                  show the Get answer settings\n"
   "  start var | start rts   first packet used by push (default var)\n"
   "  id auto | id <hex>      reply machine id for transfers the calc starts";
 
@@ -580,6 +611,22 @@ void handleCommand(String cmd) {
         Serial.printf("%s%s", i ? "," : "", tiNumber(replyVals[i]).c_str());
       Serial.println("} - now run Get x on the calculator");
     }
+  } else if (cmd.startsWith("getid ")) {
+    getId = (uint8_t)strtoul(cmd.c_str() + 6, nullptr, 16);
+    printGetCfg();
+  } else if (cmd.startsWith("gettype ")) {
+    getType = (uint8_t)strtoul(cmd.c_str() + 8, nullptr, 16);
+    printGetCfg();
+  } else if (cmd.startsWith("getname ")) {
+    String v = cmd.substring(8);
+    v.trim();
+    getName = (v == "none") ? String("") : String((char)strtoul(v.c_str(), nullptr, 16));
+    printGetCfg();
+  } else if (cmd == "getack on" || cmd == "getack off") {
+    getAck = (cmd == "getack on");
+    printGetCfg();
+  } else if (cmd == "getcfg") {
+    printGetCfg();
   } else if (cmd == "start rts" || cmd == "start var") {
     pushStartCmd = (cmd == "start rts") ? CMD_RTS : CMD_VAR;
     Serial.printf("push now starts with %s\n", cmdName(pushStartCmd));

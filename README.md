@@ -103,7 +103,18 @@ Observed on a Voyage 200 with the sketches in this repo:
   example ζ(x) = ∑(1/n^x, n, 1, ∞) is stored as `n^(-x)`:
   `E5 28 | 01 01 1F | 18 | 08 F0 7A 18 93 | BA`. The CBL sketch prints function
   bodies as a token list using these; it does not rebuild the formula.
-- **Not done yet:** `Get` (the ESP32 sending values back to the calculator).
+- **ESP32 -> calculator, push (works).** With the calculator idle at the Home
+  screen, the ESP32 can send it a string variable unprompted, posing as another
+  Voyage 200 (id `0x88`): VAR -> ACK, CTS -> ACK, DATA -> ACK -> EOT -> ACK, using
+  the same string format as `SendCalc`. The calculator's OS only handles incoming
+  transfers while idle, so its first ACK can take a few seconds. An existing
+  variable of the same name is overwritten silently, without a prompt.
+- **ESP32 -> calculator, `Get` (not working yet).** `Get x` sends a REQ (`0xA2`,
+  id `0x89`, data `00 00 00 00 1E 00`) and waits. Answering with ACK and then a
+  CBL-style list (the sequence the TI-89/V200 link guide gives for answering a
+  REQ) gets no ACK for the VAR header; the calculator re-sends the REQ and then
+  reports "Protected memory violation". The CBL sketch's `getid`, `gettype`,
+  `getname` and `getack` commands change the answer's header to test variants.
 
 ### Character set
 
