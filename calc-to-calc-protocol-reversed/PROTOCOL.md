@@ -156,8 +156,11 @@ Observed:
 
   The sniffer missed the first two bits of the first pair: it shows up as
   `22 1A 00 40 A2 15 03` plus 6 bits. That is exactly `89 68 00 00 89 56 0C 10`
-  shifted by two bits. The cause was a sniffer bug, fixed in the next sketch
-  version (see its header comment).
+  shifted by two bits. The cause was a sniffer bug: at start-up the decoder
+  ignored the first bit when the lines were already idle, and this was the
+  session's first traffic. It happened again in `captures/2026-10-09_192238.log`,
+  where the automatic line history shows the lost bit was on the wire. Fixed
+  since.
 - **The first T01b run** saw one RDY/ACK pair 2.4 s after `mark T01b B
   Receive`, while B was opening VAR-LINK and choosing Receive. That fits the
   rerun: the RDY came from opening VAR-LINK.

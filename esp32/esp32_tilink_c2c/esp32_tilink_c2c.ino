@@ -599,6 +599,7 @@ static IRAM_ATTR __attribute__((noinline)) void sampleForever(const uint32_t tip
 
   LinkEvent ev;
   uint32_t last = dedic_gpio_cpu_ll_read_in() & mask;
+  dec.begin(last & tipBit, last & ringBit);
   uint32_t lastCycles = esp_cpu_get_cycle_count();
   uint64_t hi = 0;          // upper part of the 64-bit cycle count
   uint64_t lastFeed = 0;

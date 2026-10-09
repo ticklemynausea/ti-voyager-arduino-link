@@ -59,6 +59,10 @@ public:
   uint32_t bytes = 0, partials = 0, noacks = 0, ambiguousBits = 0, stucks = 0;
   uint32_t minBitTicks = 0xFFFFFFFF, maxBitTicks = 0;   // between bits inside a byte
 
+  // Call once before feeding, with the lines as they are now. feed() only sees
+  // changes, so if the lines are already idle it must be told so here.
+  BITDECODER_FN void begin(bool tip, bool ring) { _phase = (tip && ring) ? IDLE : WAIT_IDLE; }
+
   // tip / ring: true = line high. Call only when at least one of them changed.
   BITDECODER_FN bool feed(bool tip, bool ring, uint64_t t, LinkEvent &ev) {
     uint8_t s = (tip ? 2 : 0) | (ring ? 1 : 0);   // 3 idle, 1 tip low, 2 ring low, 0 both low
