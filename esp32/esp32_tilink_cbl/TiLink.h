@@ -2,17 +2,17 @@
  * TiLink.h - TI-89 / TI-92+ / Voyage 200 link-port driver for ESP32 (and other Arduinos)
  *
  * Layer 1: the TI bit-level handshake on the two link wires (tip + ring).
- * Layer 2: a simple frame on top:  0x7E | len (1..120) | payload | checksum
- *          (checksum = sum of payload bytes, mod 256)
+ *          sendByte / recvByte; this is what the CBL sketch builds TI's
+ *          packet protocol on.
+ * Optional: a simple custom frame (0x7E | len | payload | checksum) for a
+ *          raw-byte link with a C program on the calculator. Unused by the
+ *          CBL sketch; kept from an earlier experiment.
  *
- * TI's own packet protocol (variables, Send/Get) is NOT used. The calculator
- * side sends/receives raw bytes with OSWriteLinkBlock / OSReadLinkBlock.
- *
- * Wiring (ESP32 is 3.3 V -> use a BSS138-style bidirectional level shifter):
- *   jack tip  (red)   -> [1k] -> shifter HV1 ; shifter LV1 -> tipPin
- *   jack ring (white) -> [1k] -> shifter HV2 ; shifter LV2 -> ringPin
- *   jack sleeve       -> GND (shared by calc, shifter and ESP32)
- *   shifter HV -> ESP32 5V, shifter LV -> ESP32 3V3
+ * Wiring (Voyage 200 lines idle at 3.3 V, so an ESP32 connects directly):
+ *   jack tip  (red)   -> 220 ohm -> tipPin
+ *   jack ring (white) -> 220 ohm -> ringPin
+ *   jack sleeve       -> GND
+ * If your calculator's lines idle at about 5 V, use a bidirectional level shifter.
  */
 #pragma once
 #include <Arduino.h>

@@ -1,7 +1,7 @@
 # ti-voyager-arduino-link
 
 Experiments in talking to a **TI Voyage 200** graphing calculator through its 2.5 mm
-link port, from an Arduino or ESP32.
+link port, from an ESP32 programmed with the Arduino framework.
 
 The long-term idea is to give the Voyage 200 some form of internet access, with an
 ESP32 doing the networking and the calculator acting as a terminal. This repo is
@@ -11,8 +11,7 @@ the protocol notes below as findings from one calculator rather than a specifica
 ## Hardware
 
 - TI Voyage 200 (the TI-89 / TI-92 Plus family should behave the same way)
-- M5Stack Stamp S3 (ESP32-S3); a classic ESP32 or an Arduino Uno/Nano also work
-  with different pins
+- M5Stack Stamp S3 (ESP32-S3); other ESP32 boards should work with different pins
 - A 2.5 mm stereo (TRS) pigtail cable. The plug's moulded collar may need shaving
   down to seat fully in the Voyage 200's recessed port.
 - Two 220 ohm resistors
@@ -46,16 +45,24 @@ Things learned the hard way:
 
 | Path | What it is |
 |---|---|
-| `esp32/esp32_tilink_cbl/` | **Current main experiment.** Makes the ESP32 answer TI-BASIC `Send {...}` like a CBL, and `SendCalc` like another calculator, then decodes lists, strings and (shallowly) functions. |
-| `esp32/esp32_tilink_sniffer/` | Receive-only sniffer: acknowledges every byte and prints TI packets in hex. |
-| `esp32/esp32_tilink_linetest/` | Prints raw tip/ring states; for checking the wiring. |
-| `esp32/esp32_tilink_pingpong/` | Ping-pong demo using a simple custom frame format. Needs `calculator/pingpong.c` on the calculator. |
-| `arduino/ti_link_arduino/` | The first experiment: an Arduino Uno/Nano version of the raw-byte link. |
-| `calculator/` | C programs for the calculator side (GCC4TI / TIGCC). Not yet tested on hardware. |
+| `esp32/esp32_tilink_cbl/` | **The main experiment.** Receives TI-BASIC `Send {...}` (as a CBL) and `SendCalc` (as another calculator), decoding lists, strings and (shallowly) functions; answers `Get x`; and pushes string variables to the calculator. Every packet is logged. Type `help` in the Serial Monitor for its commands. |
+| `esp32/esp32_tilink_linetest/` | Prints raw tip/ring states without driving the lines; for checking the wiring. |
 
-Each ESP32 sketch folder carries its own copy of `TiLink.h` / `TiLink.cpp`, the
-link-layer library (the bit-level handshake plus error diagnostics). Keep the
-copies in sync when changing it.
+`TiLink.h` / `TiLink.cpp` in the CBL sketch's folder are the link-layer library:
+the bit-level handshake plus error diagnostics.
+
+### Removed experiments
+
+Earlier experiments were removed once the CBL sketch covered their ground. They
+are in the git history, last present in commit `d4abde0`:
+
+- `esp32/esp32_tilink_sniffer/`: receive-only packet sniffer.
+- `esp32/esp32_tilink_pingpong/` with `calculator/pingpong.c`: a raw-byte link using
+  a custom frame format instead of TI's packets, which needs a C program on the
+  calculator (GCC4TI). Never tested end to end. A C program could transfer faster
+  than BASIC's `Send`/`Get`, so this route may be worth reviving.
+- `arduino/ti_link_arduino/` with `calculator/tilink.c`: the first experiment, for
+  an Arduino Uno/Nano.
 
 ## Building and flashing
 
@@ -69,9 +76,6 @@ arduino-cli monitor -p /dev/cu.usbmodem14301 -c baudrate=115200
 
 Replace the port with your own (`arduino-cli board list`). The sketches also open
 in the Arduino IDE.
-
-Calculator programs build with GCC4TI, e.g. `tigcc -Os -o pingpong calculator/pingpong.c`,
-and are sent to the calculator with TiLP and a link cable.
 
 ## Protocol findings
 
